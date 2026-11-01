@@ -21,6 +21,7 @@ import {
   addToWishlist,
   removeFromWishlist,
   buyPerk,
+  wishlistIdsOf,
 } from './store.js';
 import {
   PERKS,
@@ -36,10 +37,12 @@ const {
   CHARACTER_POOL_SIZE = '150',
   ROUND_SECONDS = '30',
   PIECES_TO_COMPLETE = '4',
+  WISHLIST_BOOST = '0.35',
 } = process.env;
 
 const ROUND_MS = Number(ROUND_SECONDS) * 1000;
 const PIECES = Number(PIECES_TO_COMPLETE);
+const RECENT_PLAYER_MS = 30 * 60 * 1000;
 
 const client = new Client({
   intents: [
@@ -51,6 +54,31 @@ const client = new Client({
 
 // Uma rodada por canal ao mesmo tempo
 const activeRounds = new Set();
+
+// Quem jogou recentemente em cada canal: channelId -> Map(userId -> último horário)
+const recentPlayers = new Map();
+
+function markPlayer(channelId, userId) {
+  if (!recentPlayers.has(channelId)) recentPlayers.set(channelId, new Map());
+  recentPlayers.get(channelId).set(userId, Date.now());
+}
+
+function activePlayers(channelId) {
+  const players = recentPlayers.get(channelId);
+  if (!players) return [];
+  for (const [id, time] of players) if (Date.now() - time > RECENT_PLAYER_MS) players.delete(id);
+  return [...players.keys()];
+}
+
+// Com chance WISHLIST_BOOST, sorteia alguém das wishlists de quem jogou neste canal nos últimos 30 min.
+// Quanto mais jogadores querem o mesmo personagem, maior a chance dele.
+function drawCharacter(channelId) {
+  if (Math.random() < Number(WISHLIST_BOOST)) {
+    const wanted = wishlistIdsOf(activePlayers(channelId)).map(getCharacter).filter(Boolean);
+    if (wanted.length) return wanted[Math.floor(Math.random() * wanted.length)];
+  }
+  return randomCharacter();
+}
 
 const commands = [
   new SlashCommandBuilder().setName('jogar').setDescription('Mostra um personagem: adivinhe o nome completo!'),
@@ -130,7 +158,8 @@ async function handlePlay(interaction) {
     return interaction.reply({ content: '⏳ Já tem uma rodada rolando neste canal!', flags: MessageFlags.Ephemeral });
   }
 
-  const character = randomCharacter();
+  markPlayer(channelId, interaction.user.id);
+  const character = drawCharacter(channelId);
   activeRounds.add(channelId);
 
   const embed = new EmbedBuilder()
@@ -155,6 +184,7 @@ async function handlePlay(interaction) {
   }, ROUND_MS / 2);
 
   collector.on('collect', async (message) => {
+    markPlayer(channelId, message.author.id); // quem chuta conta como jogador ativo
     if (!isCorrectGuess(character, message.content)) return;
     collector.stop('acerto');
 

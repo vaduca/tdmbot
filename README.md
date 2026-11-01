@@ -23,6 +23,7 @@ Os personagens vêm do [AniList](https://anilist.co) (os mais favoritados), com 
 - Acertou alguém **da wishlist**: ganha 1 pedaço. Com 4 pedaços, a carta entra no inventário e você ganha um bônus de **100% do valor** do personagem.
 - Acertou alguém **fora da wishlist**: cada acerto dá **10% do valor** em moedas. Com 4 pedaços, você ganha um bônus de **50% do valor** e o personagem não entra no inventário.
 - Os pedaços continuam guardados se você tirar ou colocar o personagem na wishlist. O que vale é se ele está na wishlist no momento do 4º acerto.
+- Em **35%** das rodadas, o personagem sai das wishlists de quem jogou naquele canal nos últimos 30 minutos (quem usou `/jogar` ou mandou palpite). Quanto mais jogadores querem o mesmo personagem, maior a chance dele. Ajuste com `WISHLIST_BOOST` no `.env`.
 
 ### Valor por rank
 

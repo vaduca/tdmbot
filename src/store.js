@@ -102,6 +102,11 @@ export function buyPerk(userId, perkId) {
   return { ok: true, level: level + 1, cost, balance: u.coins };
 }
 
+// Todos os IDs de personagens nas wishlists desses usuários (com repetição, se mais de um quiser o mesmo)
+export function wishlistIdsOf(userIds) {
+  return userIds.flatMap((id) => db.users[id]?.wishlist ?? []);
+}
+
 export function getUser(userId) {
   return user(userId);
 }
