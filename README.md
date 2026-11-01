@@ -9,7 +9,7 @@ Os personagens vêm do [AniList](https://anilist.co) (os mais favoritados), com 
 
 | Comando | O que faz |
 |---|---|
-| `/jogar` | Inicia uma rodada no canal (30s, com dica das iniciais na metade do tempo) |
+| `/jogar [quantidade]` | Inicia uma sequência de 1 a 5 rodadas (padrão 3; cada uma dura 30s, com dica na metade do tempo) |
 | `/inventario [usuario]` | Mostra as cartas completas |
 | `/progresso` | Mostra os pedaços que você está juntando (só você vê) |
 | `/ranking` | Top 10 por cartas, moedas e acertos |
@@ -70,6 +70,7 @@ npm start
 
 - `CHARACTER_POOL_SIZE` — quantos personagens entram no jogo. Menos personagens = repetem mais = cartas completam mais rápido.
 - `ROUND_SECONDS` — duração de cada rodada.
+- `/jogar quantidade` — número de rodadas na sessão (padrão 3, máximo 5); as rodadas acontecem em sequência e mantêm o canal ocupado até a sessão terminar.
 - `PIECES_TO_COMPLETE` — pedaços para completar uma carta (padrão 4).
 
 ## Estrutura

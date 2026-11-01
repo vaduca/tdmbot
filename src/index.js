@@ -43,6 +43,8 @@ const {
 const ROUND_MS = Number(ROUND_SECONDS) * 1000;
 const PIECES = Number(PIECES_TO_COMPLETE);
 const RECENT_PLAYER_MS = 30 * 60 * 1000;
+const DEFAULT_ROUNDS = 3;
+const MAX_ROUNDS = 5;
 
 const client = new Client({
   intents: [
@@ -81,7 +83,16 @@ function drawCharacter(channelId) {
 }
 
 const commands = [
-  new SlashCommandBuilder().setName('jogar').setDescription('Mostra um personagem: adivinhe o nome completo!'),
+  new SlashCommandBuilder()
+    .setName('jogar')
+    .setDescription('Inicia uma sequência de rodadas: adivinhe os personagens!')
+    .addIntegerOption((o) =>
+      o
+        .setName('quantidade')
+        .setDescription(`Número de rodadas (padrão ${DEFAULT_ROUNDS}, máximo ${MAX_ROUNDS})`)
+        .setMinValue(1)
+        .setMaxValue(MAX_ROUNDS),
+    ),
   new SlashCommandBuilder()
     .setName('inventario')
     .setDescription('Mostra as cartas completas no inventário')
@@ -152,15 +163,8 @@ function initialsHint(name) {
     .join('  ');
 }
 
-async function handlePlay(interaction) {
+function playRound(interaction, character) {
   const channelId = interaction.channelId;
-  if (activeRounds.has(channelId)) {
-    return interaction.reply({ content: '⏳ Já tem uma rodada rolando neste canal!', flags: MessageFlags.Ephemeral });
-  }
-
-  markPlayer(channelId, interaction.user.id);
-  const character = drawCharacter(channelId);
-  activeRounds.add(channelId);
 
   const embed = new EmbedBuilder()
     .setTitle('❓ Quem é este personagem?')
@@ -170,78 +174,109 @@ async function handlePlay(interaction) {
     .setColor(Colors.Blurple)
     .setFooter({ text: `⭐ Na sua wishlist: ${PIECES} pedaços = carta • Fora dela: cada acerto vira TDM Coins` });
 
-  await interaction.reply({ embeds: [embed] });
+  return interaction.channel.send({ embeds: [embed] }).then(() => new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(hintTimer);
+      resolve(result);
+    };
 
-  const collector = interaction.channel.createMessageCollector({
-    filter: (m) => !m.author.bot,
-    time: ROUND_MS,
-  });
+    const collector = interaction.channel.createMessageCollector({ filter: (m) => !m.author.bot, time: ROUND_MS });
+    const hintTimer = setTimeout(() => {
+      interaction.channel.send(`💡 **Dica:** ${initialsHint(character.name)}`).catch(() => {});
+    }, ROUND_MS / 2);
 
-  const hintTimer = setTimeout(() => {
-    interaction.channel
-      .send(`💡 **Dica:** ${initialsHint(character.name)}`)
-      .catch(() => {});
-  }, ROUND_MS / 2);
+    collector.on('collect', async (message) => {
+      markPlayer(channelId, message.author.id); // quem chuta conta como jogador ativo
+      if (!isCorrectGuess(character, message.content)) return;
+      collector.stop('acerto');
 
-  collector.on('collect', async (message) => {
-    markPlayer(channelId, message.author.id); // quem chuta conta como jogador ativo
-    if (!isCorrectGuess(character, message.content)) return;
-    collector.stop('acerto');
+      try {
+        const result = recordCorrectGuess(message.author.id, character, PIECES);
+        const win = new EmbedBuilder()
+          .setThumbnail(character.image)
+          .setColor(result.completed ? Colors.Gold : result.inWishlist ? Colors.Green : Colors.Yellow);
 
-    const result = recordCorrectGuess(message.author.id, character, PIECES);
-    const win = new EmbedBuilder()
-      .setThumbnail(character.image)
-      .setColor(result.completed ? Colors.Gold : result.inWishlist ? Colors.Green : Colors.Yellow);
+        if (result.completed && result.inWishlist) {
+          win
+            .setTitle(`🎉 Carta completa: ${character.name}!`)
+            .setDescription(
+              `${message.author} juntou todos os pedaços e **${character.name}** entrou para o inventário!` +
+                (result.copies > 1 ? `\nAgora você tem **${result.copies}** cópias.` : '') +
+                `\nBônus da wishlist (100%): ${coins(result.earned)}`,
+            );
+        } else if (result.completed) {
+          win
+            .setTitle(`💰 Pedaços completos: ${character.name}`)
+            .setDescription(
+              `${message.author} juntou todos os pedaços, mas **${character.name}** não está na wishlist.\n` +
+                `Acerto + bônus de 50%: ${coins(result.earned)}`,
+            );
+        } else if (result.inWishlist) {
+          win
+            .setTitle(`⭐ Acertou: ${character.name}`)
+            .setDescription(`${message.author} ganhou 1 pedaço de **${character.name}** (está na sua wishlist)!`);
+        } else {
+          win
+            .setTitle(`✅ Acertou: ${character.name}`)
+            .setDescription(
+              `${message.author} ganhou ${coins(result.earned)}.\n` +
+                `Adicione com \`/wishlist adicionar\` para os pedaços virarem carta.`,
+            );
+        }
 
-    if (result.completed && result.inWishlist) {
-      win
-        .setTitle(`🎉 Carta completa: ${character.name}!`)
-        .setDescription(
-          `${message.author} juntou todos os pedaços e **${character.name}** entrou para o inventário!` +
-            (result.copies > 1 ? `\nAgora você tem **${result.copies}** cópias.` : '') +
-            `\nBônus da wishlist (100%): ${coins(result.earned)}`,
+        win.addFields(
+          { name: 'Pedaços', value: `${pieceBar(result.pieces)} (${result.pieces}/${PIECES})`, inline: true },
+          { name: 'Raridade', value: rarityLabel(character), inline: true },
         );
-    } else if (result.completed) {
-      win
-        .setTitle(`💰 Pedaços completos: ${character.name}`)
-        .setDescription(
-          `${message.author} juntou todos os pedaços, mas **${character.name}** não está na wishlist.\n` +
-            `Acerto + bônus de 50%: ${coins(result.earned)}`,
-        );
-    } else if (result.inWishlist) {
-      win
-        .setTitle(`⭐ Acertou: ${character.name}`)
-        .setDescription(`${message.author} ganhou 1 pedaço de **${character.name}** (está na sua wishlist)!`);
-    } else {
-      win
-        .setTitle(`✅ Acertou: ${character.name}`)
-        .setDescription(
-          `${message.author} ganhou ${coins(result.earned)}.\n` +
-            `Adicione com \`/wishlist adicionar\` para os pedaços virarem carta.`,
-        );
+        win.setFooter({ text: `Saldo: ${result.balance.toLocaleString('pt-BR')} TDM Coins` });
+        await message.reply({ embeds: [win] });
+      } catch (error) {
+        reject(error);
+      }
+    });
+
+    collector.on('end', async (_collected, reason) => {
+      if (reason === 'acerto') return finish('acerto');
+      try {
+        const lose = new EmbedBuilder()
+          .setTitle('⌛ Tempo esgotado!')
+          .setDescription(`Era **${character.name}** (${character.anime}).`)
+          .setThumbnail(character.image)
+          .setColor(Colors.Red);
+        await interaction.channel.send({ embeds: [lose] });
+        finish('tempo');
+      } catch (error) {
+        reject(error);
+      }
+    });
+  }));
+}
+
+async function handlePlay(interaction) {
+  const channelId = interaction.channelId;
+  if (activeRounds.has(channelId)) {
+    return interaction.reply({ content: '⏳ Já tem uma sessão de jogo rolando neste canal!', flags: MessageFlags.Ephemeral });
+  }
+
+  const rounds = interaction.options.getInteger('quantidade') ?? DEFAULT_ROUNDS;
+  activeRounds.add(channelId);
+  markPlayer(channelId, interaction.user.id);
+
+  try {
+    await interaction.reply({
+      content: `🎮 ${interaction.user}, começando **${rounds} rodada(s)**. A próxima começa quando a atual terminar.`,
+    });
+    for (let i = 0; i < rounds; i++) {
+      const character = drawCharacter(channelId);
+      await playRound(interaction, character);
     }
-
-    win.addFields(
-      { name: 'Pedaços', value: `${pieceBar(result.pieces)} (${result.pieces}/${PIECES})`, inline: true },
-      { name: 'Raridade', value: rarityLabel(character), inline: true },
-    );
-    win.setFooter({ text: `Saldo: ${result.balance.toLocaleString('pt-BR')} TDM Coins` });
-
-    await message.reply({ embeds: [win] });
-  });
-
-  collector.on('end', async (_collected, reason) => {
-    clearTimeout(hintTimer);
+    await interaction.channel.send(`🏁 Sessão concluída! Foram iniciadas **${rounds} rodada(s)**.`);
+  } finally {
     activeRounds.delete(channelId);
-    if (reason === 'acerto') return;
-
-    const lose = new EmbedBuilder()
-      .setTitle('⌛ Tempo esgotado!')
-      .setDescription(`Era **${character.name}** (${character.anime}).`)
-      .setThumbnail(character.image)
-      .setColor(Colors.Red);
-    await interaction.channel.send({ embeds: [lose] }).catch(() => {});
-  });
+  }
 }
 
 async function handleInventory(interaction) {
