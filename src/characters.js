@@ -21,6 +21,9 @@ query ($page: Int) {
 
 let pool = [];
 
+// A lista vem ordenada por favoritos, então a posição é o rank (1 = mais favoritado)
+const withRanks = (characters) => characters.map((c, i) => ({ ...c, rank: i + 1 }));
+
 async function fetchPage(page) {
   const res = await fetch('https://graphql.anilist.co', {
     method: 'POST',
@@ -36,7 +39,7 @@ export async function loadCharacters(poolSize) {
   try {
     const cached = JSON.parse(await readFile(CACHE_FILE, 'utf8'));
     if (Date.now() - cached.fetchedAt < CACHE_MAX_AGE_MS && cached.characters.length >= poolSize) {
-      pool = cached.characters.slice(0, poolSize);
+      pool = withRanks(cached.characters.slice(0, poolSize));
       return pool;
     }
   } catch {
@@ -62,8 +65,20 @@ export async function loadCharacters(poolSize) {
 
   await mkdir(path.dirname(CACHE_FILE), { recursive: true });
   await writeFile(CACHE_FILE, JSON.stringify({ fetchedAt: Date.now(), characters }, null, 2));
-  pool = characters.slice(0, poolSize);
+  pool = withRanks(characters.slice(0, poolSize));
   return pool;
+}
+
+export function allCharacters() {
+  return pool;
+}
+
+// Busca para o autocomplete: nome ou anime contendo o texto digitado
+export function searchCharacters(query, limit = 25) {
+  const q = normalize(query);
+  return pool
+    .filter((c) => !q || normalize(`${c.name} ${c.anime}`).includes(q))
+    .slice(0, limit);
 }
 
 export function randomCharacter() {

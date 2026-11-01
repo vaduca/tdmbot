@@ -1,6 +1,13 @@
-// Armazenamento simples em JSON: pedaços em progresso e inventário de cada usuário.
+// Armazenamento simples em JSON: pedaços, inventário, moedas, wishlist e perks de cada usuário.
 import { readFileSync, writeFileSync, mkdirSync, renameSync } from 'node:fs';
 import path from 'node:path';
+import {
+  PERKS,
+  guessReward,
+  outsideCompletionBonus,
+  wishlistCompletionBonus,
+  wishlistSlots,
+} from './economy.js';
 
 const DB_FILE = path.resolve('data', 'players.json');
 
@@ -19,28 +26,80 @@ function save() {
 }
 
 function user(userId) {
-  return (db.users[userId] ??= { pieces: {}, inventory: {}, correct: 0 });
+  const u = (db.users[userId] ??= {});
+  // preenche campos novos para jogadores antigos
+  u.pieces ??= {};
+  u.inventory ??= {};
+  u.correct ??= 0;
+  u.coins ??= 0;
+  u.wishlist ??= [];
+  u.perks ??= {};
+  return u;
 }
 
 /**
- * Dá 1 pedaço do personagem ao usuário.
- * Retorna { pieces, completed, copies } — completed=true quando a carta entrou no inventário.
+ * Registra um acerto.
+ * - Personagem na wishlist: ganha 1 pedaço; com todos os pedaços entra no inventário + bônus de 100% do valor.
+ * - Fora da wishlist: cada acerto dá moedas; com todos os pedaços ganha bônus de 50% do valor (não vai pro inventário).
  */
-export function addPiece(userId, characterId, piecesToComplete) {
+export function recordCorrectGuess(userId, character, piecesToComplete) {
   const u = user(userId);
+  const id = String(character.id);
+  const inWishlist = u.wishlist.includes(id);
   u.correct++;
-  const pieces = (u.pieces[characterId] ?? 0) + 1;
 
-  if (pieces >= piecesToComplete) {
-    delete u.pieces[characterId];
-    u.inventory[characterId] = (u.inventory[characterId] ?? 0) + 1;
-    save();
-    return { pieces: piecesToComplete, completed: true, copies: u.inventory[characterId] };
+  let earned = inWishlist ? 0 : guessReward(character);
+  let pieces = (u.pieces[id] ?? 0) + 1;
+  const completed = pieces >= piecesToComplete;
+
+  if (completed) {
+    delete u.pieces[id];
+    pieces = piecesToComplete;
+    if (inWishlist) {
+      u.inventory[id] = (u.inventory[id] ?? 0) + 1;
+      earned += wishlistCompletionBonus(character);
+    } else {
+      earned += outsideCompletionBonus(character);
+    }
+  } else {
+    u.pieces[id] = pieces;
   }
 
-  u.pieces[characterId] = pieces;
+  u.coins += earned;
   save();
-  return { pieces, completed: false, copies: u.inventory[characterId] ?? 0 };
+  return { inWishlist, pieces, completed, earned, balance: u.coins, copies: u.inventory[id] ?? 0 };
+}
+
+export function addToWishlist(userId, characterId) {
+  const u = user(userId);
+  const id = String(characterId);
+  if (u.wishlist.includes(id)) return { ok: false, reason: 'already' };
+  if (u.wishlist.length >= wishlistSlots(u)) return { ok: false, reason: 'full', slots: wishlistSlots(u) };
+  u.wishlist.push(id);
+  save();
+  return { ok: true, used: u.wishlist.length, slots: wishlistSlots(u) };
+}
+
+export function removeFromWishlist(userId, characterId) {
+  const u = user(userId);
+  const index = u.wishlist.indexOf(String(characterId));
+  if (index === -1) return false;
+  u.wishlist.splice(index, 1);
+  save();
+  return true;
+}
+
+export function buyPerk(userId, perkId) {
+  const u = user(userId);
+  const perk = PERKS[perkId];
+  const level = u.perks[perkId] ?? 0;
+  if (level >= perk.maxLevel) return { ok: false, reason: 'max' };
+  const cost = perk.cost(level + 1);
+  if (u.coins < cost) return { ok: false, reason: 'coins', cost, balance: u.coins };
+  u.coins -= cost;
+  u.perks[perkId] = level + 1;
+  save();
+  return { ok: true, level: level + 1, cost, balance: u.coins };
 }
 
 export function getUser(userId) {
@@ -48,12 +107,16 @@ export function getUser(userId) {
 }
 
 export function ranking(limit = 10) {
-  return Object.entries(db.users)
-    .map(([id, u]) => ({
-      id,
-      cards: Object.values(u.inventory).reduce((a, b) => a + b, 0),
-      correct: u.correct,
-    }))
-    .sort((a, b) => b.cards - a.cards || b.correct - a.correct)
+  return Object.keys(db.users)
+    .map((id) => {
+      const u = user(id);
+      return {
+        id,
+        cards: Object.values(u.inventory).reduce((a, b) => a + b, 0),
+        coins: u.coins,
+        correct: u.correct,
+      };
+    })
+    .sort((a, b) => b.cards - a.cards || b.coins - a.coins || b.correct - a.correct)
     .slice(0, limit);
 }

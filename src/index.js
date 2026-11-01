@@ -7,8 +7,28 @@ import {
   Colors,
   MessageFlags,
 } from 'discord.js';
-import { loadCharacters, randomCharacter, getCharacter, isCorrectGuess } from './characters.js';
-import { addPiece, getUser, ranking } from './store.js';
+import {
+  loadCharacters,
+  randomCharacter,
+  getCharacter,
+  isCorrectGuess,
+  searchCharacters,
+} from './characters.js';
+import {
+  recordCorrectGuess,
+  getUser,
+  ranking,
+  addToWishlist,
+  removeFromWishlist,
+  buyPerk,
+} from './store.js';
+import {
+  PERKS,
+  rarityOf,
+  valueOf,
+  coins,
+  wishlistSlots,
+} from './economy.js';
 
 const {
   DISCORD_TOKEN,
@@ -40,11 +60,61 @@ const commands = [
     .addUserOption((o) => o.setName('usuario').setDescription('Ver o inventário de outra pessoa')),
   new SlashCommandBuilder().setName('progresso').setDescription('Mostra os pedaços de cartas que você está juntando'),
   new SlashCommandBuilder().setName('ranking').setDescription('Quem tem mais cartas no servidor'),
+  new SlashCommandBuilder()
+    .setName('saldo')
+    .setDescription('Mostra suas TDM Coins')
+    .addUserOption((o) => o.setName('usuario').setDescription('Ver o saldo de outra pessoa')),
+  new SlashCommandBuilder()
+    .setName('wishlist')
+    .setDescription('Só personagens da wishlist entram no inventário')
+    .addSubcommand((s) =>
+      s
+        .setName('ver')
+        .setDescription('Mostra a wishlist')
+        .addUserOption((o) => o.setName('usuario').setDescription('Ver a wishlist de outra pessoa')),
+    )
+    .addSubcommand((s) =>
+      s
+        .setName('adicionar')
+        .setDescription('Adiciona um personagem à sua wishlist')
+        .addStringOption((o) =>
+          o.setName('personagem').setDescription('Nome do personagem').setRequired(true).setAutocomplete(true),
+        ),
+    )
+    .addSubcommand((s) =>
+      s
+        .setName('remover')
+        .setDescription('Remove um personagem da sua wishlist')
+        .addStringOption((o) =>
+          o.setName('personagem').setDescription('Nome do personagem').setRequired(true).setAutocomplete(true),
+        ),
+    ),
+  new SlashCommandBuilder()
+    .setName('perks')
+    .setDescription('Melhorias compradas com TDM Coins')
+    .addSubcommand((s) => s.setName('ver').setDescription('Mostra os perks e quanto custa o próximo nível'))
+    .addSubcommand((s) =>
+      s
+        .setName('comprar')
+        .setDescription('Compra o próximo nível de um perk')
+        .addStringOption((o) =>
+          o
+            .setName('perk')
+            .setDescription('Qual perk')
+            .setRequired(true)
+            .addChoices(...Object.entries(PERKS).map(([id, p]) => ({ name: p.name, value: id }))),
+        ),
+    ),
 ];
 
 function pieceBar(pieces) {
   return '🟩'.repeat(pieces) + '⬜'.repeat(PIECES - pieces);
 }
+
+const rarityLabel = (c) => {
+  const r = rarityOf(c);
+  return `${r.emoji} ${r.name} • #${c.rank} • ${valueOf(c)} 🪙`;
+};
 
 // Dica: iniciais de cada palavra, ex.: "Monkey D. Luffy" -> "M\_\_\_\_\_ D. L\_\_\_\_"
 function initialsHint(name) {
@@ -69,7 +139,7 @@ async function handlePlay(interaction) {
     .addFields({ name: '📺 Anime', value: character.anime })
     .setImage(character.image)
     .setColor(Colors.Blurple)
-    .setFooter({ text: `Cada acerto vale 1 pedaço • ${PIECES} pedaços = carta no inventário` });
+    .setFooter({ text: `⭐ Na sua wishlist: ${PIECES} pedaços = carta • Fora dela: cada acerto vira TDM Coins` });
 
   await interaction.reply({ embeds: [embed] });
 
@@ -88,25 +158,44 @@ async function handlePlay(interaction) {
     if (!isCorrectGuess(character, message.content)) return;
     collector.stop('acerto');
 
-    const result = addPiece(message.author.id, character.id, PIECES);
+    const result = recordCorrectGuess(message.author.id, character, PIECES);
     const win = new EmbedBuilder()
       .setThumbnail(character.image)
-      .setColor(result.completed ? Colors.Gold : Colors.Green);
+      .setColor(result.completed ? Colors.Gold : result.inWishlist ? Colors.Green : Colors.Yellow);
 
-    if (result.completed) {
+    if (result.completed && result.inWishlist) {
       win
         .setTitle(`🎉 Carta completa: ${character.name}!`)
         .setDescription(
           `${message.author} juntou todos os pedaços e **${character.name}** entrou para o inventário!` +
-            (result.copies > 1 ? `\nAgora você tem **${result.copies}** cópias.` : ''),
-        )
-        .addFields({ name: 'Pedaços', value: pieceBar(PIECES) });
+            (result.copies > 1 ? `\nAgora você tem **${result.copies}** cópias.` : '') +
+            `\nBônus da wishlist (100%): ${coins(result.earned)}`,
+        );
+    } else if (result.completed) {
+      win
+        .setTitle(`💰 Pedaços completos: ${character.name}`)
+        .setDescription(
+          `${message.author} juntou todos os pedaços, mas **${character.name}** não está na wishlist.\n` +
+            `Acerto + bônus de 50%: ${coins(result.earned)}`,
+        );
+    } else if (result.inWishlist) {
+      win
+        .setTitle(`⭐ Acertou: ${character.name}`)
+        .setDescription(`${message.author} ganhou 1 pedaço de **${character.name}** (está na sua wishlist)!`);
     } else {
       win
         .setTitle(`✅ Acertou: ${character.name}`)
-        .setDescription(`${message.author} ganhou 1 pedaço de **${character.name}**!`)
-        .addFields({ name: 'Pedaços', value: `${pieceBar(result.pieces)} (${result.pieces}/${PIECES})` });
+        .setDescription(
+          `${message.author} ganhou ${coins(result.earned)}.\n` +
+            `Adicione com \`/wishlist adicionar\` para os pedaços virarem carta.`,
+        );
     }
+
+    win.addFields(
+      { name: 'Pedaços', value: `${pieceBar(result.pieces)} (${result.pieces}/${PIECES})`, inline: true },
+      { name: 'Raridade', value: rarityLabel(character), inline: true },
+    );
+    win.setFooter({ text: `Saldo: ${result.balance.toLocaleString('pt-BR')} TDM Coins` });
 
     await message.reply({ embeds: [win] });
   });
@@ -159,7 +248,8 @@ async function handleInventory(interaction) {
 }
 
 async function handleProgress(interaction) {
-  const entries = Object.entries(getUser(interaction.user.id).pieces);
+  const u = getUser(interaction.user.id);
+  const entries = Object.entries(u.pieces);
   if (entries.length === 0) {
     return interaction.reply({ content: 'Nenhum pedaço em andamento. Use `/jogar`!', flags: MessageFlags.Ephemeral });
   }
@@ -168,12 +258,14 @@ async function handleProgress(interaction) {
     .sort((a, b) => b[1] - a[1])
     .map(([id, pieces]) => {
       const c = getCharacter(id);
-      return `${pieceBar(pieces)} **${c?.name ?? `#${id}`}** (${pieces}/${PIECES})`;
+      const star = u.wishlist.includes(id) ? '⭐ ' : '';
+      return `${pieceBar(pieces)} ${star}**${c?.name ?? `#${id}`}** (${pieces}/${PIECES})`;
     });
 
   const embed = new EmbedBuilder()
     .setTitle('🧩 Pedaços em andamento')
     .setDescription(lines.join('\n').slice(0, 4000))
+    .setFooter({ text: '⭐ = na wishlist (vira carta). Sem ⭐ = vira TDM Coins.' })
     .setColor(Colors.Green);
 
   await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
@@ -185,7 +277,9 @@ async function handleRanking(interaction) {
 
   const medals = ['🥇', '🥈', '🥉'];
   const lines = top.map(
-    (r, i) => `${medals[i] ?? `**${i + 1}.**`} <@${r.id}> — ${r.cards} carta(s), ${r.correct} acerto(s)`,
+    (r, i) =>
+      `${medals[i] ?? `**${i + 1}.**`} <@${r.id}> — ${r.cards} carta(s), ` +
+      `${r.coins.toLocaleString('pt-BR')} 🪙, ${r.correct} acerto(s)`,
   );
 
   await interaction.reply({
@@ -194,11 +288,141 @@ async function handleRanking(interaction) {
   });
 }
 
+async function handleBalance(interaction) {
+  const target = interaction.options.getUser('usuario') ?? interaction.user;
+  const u = getUser(target.id);
+  const embed = new EmbedBuilder()
+    .setTitle(`🪙 Saldo de ${target.username}`)
+    .setDescription(coins(u.coins))
+    .addFields({ name: '⭐ Wishlist', value: `${u.wishlist.length}/${wishlistSlots(u)} vagas`, inline: true })
+    .setColor(Colors.Yellow);
+  await interaction.reply({ embeds: [embed] });
+}
+
+async function handleWishlist(interaction) {
+  const sub = interaction.options.getSubcommand();
+
+  if (sub === 'ver') {
+    const target = interaction.options.getUser('usuario') ?? interaction.user;
+    const u = getUser(target.id);
+    const slots = wishlistSlots(u);
+    const lines = u.wishlist.map((id, i) => {
+      const c = getCharacter(id);
+      if (!c) return `${i + 1}. Personagem #${id} (fora do jogo atual)`;
+      const pieces = u.pieces[id] ?? 0;
+      return `${i + 1}. **${c.name}** — ${c.anime}\n   ${rarityLabel(c)} • ${pieceBar(pieces)}`;
+    });
+    for (let i = u.wishlist.length; i < slots; i++) lines.push(`${i + 1}. *vaga livre*`);
+
+    const embed = new EmbedBuilder()
+      .setTitle(`⭐ Wishlist de ${target.username} (${u.wishlist.length}/${slots})`)
+      .setDescription(lines.join('\n').slice(0, 4000))
+      .setFooter({ text: 'Mais vagas: /perks comprar Wishlist' })
+      .setColor(Colors.Yellow);
+    return interaction.reply({ embeds: [embed] });
+  }
+
+  const character = getCharacter(interaction.options.getString('personagem'));
+  if (!character) {
+    return interaction.reply({
+      content: '❌ Personagem não encontrado. Escolha um nome da lista que aparece enquanto você digita.',
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+
+  if (sub === 'adicionar') {
+    const result = addToWishlist(interaction.user.id, character.id);
+    if (!result.ok) {
+      const content =
+        result.reason === 'already'
+          ? `**${character.name}** já está na sua wishlist.`
+          : `❌ Sua wishlist está cheia (${result.slots} vagas). Remova alguém ou compre vagas com \`/perks comprar\`.`;
+      return interaction.reply({ content, flags: MessageFlags.Ephemeral });
+    }
+    const embed = new EmbedBuilder()
+      .setTitle(`⭐ ${character.name} entrou na wishlist`)
+      .setDescription(`${character.anime}\n${rarityLabel(character)}`)
+      .setThumbnail(character.image)
+      .setFooter({ text: `${result.used}/${result.slots} vagas usadas` })
+      .setColor(Colors.Yellow);
+    return interaction.reply({ embeds: [embed] });
+  }
+
+  // remover
+  const removed = removeFromWishlist(interaction.user.id, character.id);
+  return interaction.reply({
+    content: removed
+      ? `🗑️ **${character.name}** saiu da sua wishlist. Os pedaços que você já tem continuam guardados.`
+      : `**${character.name}** não está na sua wishlist.`,
+    flags: MessageFlags.Ephemeral,
+  });
+}
+
+async function handlePerks(interaction) {
+  const sub = interaction.options.getSubcommand();
+  const u = getUser(interaction.user.id);
+
+  if (sub === 'ver') {
+    const fields = Object.entries(PERKS).map(([id, perk]) => {
+      const level = u.perks[id] ?? 0;
+      const next =
+        level >= perk.maxLevel ? '✅ Nível máximo' : `Próximo nível: ${perk.cost(level + 1).toLocaleString('pt-BR')} 🪙`;
+      return {
+        name: `${perk.emoji} ${perk.name} — nível ${level}/${perk.maxLevel}`,
+        value: `${perk.description}\n${next}`,
+      };
+    });
+    const embed = new EmbedBuilder()
+      .setTitle('🛒 Perks')
+      .setDescription(`Seu saldo: ${coins(u.coins)}`)
+      .addFields(fields)
+      .setColor(Colors.Purple);
+    return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+  }
+
+  // comprar
+  const perkId = interaction.options.getString('perk');
+  const perk = PERKS[perkId];
+  const result = buyPerk(interaction.user.id, perkId);
+  if (!result.ok) {
+    const content =
+      result.reason === 'max'
+        ? `${perk.emoji} **${perk.name}** já está no nível máximo.`
+        : `❌ Faltam TDM Coins: o próximo nível custa **${result.cost.toLocaleString('pt-BR')}** 🪙 e você tem **${result.balance.toLocaleString('pt-BR')}**.`;
+    return interaction.reply({ content, flags: MessageFlags.Ephemeral });
+  }
+
+  const extra = perkId === 'wishlist' ? `\nSua wishlist agora tem **${wishlistSlots(getUser(interaction.user.id))}** vagas.` : '';
+  return interaction.reply(
+    `${perk.emoji} ${interaction.user} comprou **${perk.name} nível ${result.level}** por ${coins(result.cost)}!${extra}`,
+  );
+}
+
+// Sugestões enquanto o usuário digita o nome do personagem
+async function handleAutocomplete(interaction) {
+  const typed = interaction.options.getFocused();
+  const sub = interaction.options.getSubcommand(false);
+  let options = searchCharacters(typed);
+  if (sub === 'remover') {
+    const wishlist = getUser(interaction.user.id).wishlist;
+    options = wishlist.map(getCharacter).filter((c) => c && options.includes(c));
+  }
+  await interaction.respond(
+    options.slice(0, 25).map((c) => ({
+      name: `${c.name} (${c.anime}) — ${rarityOf(c).name}`.slice(0, 100),
+      value: String(c.id),
+    })),
+  );
+}
+
 const handlers = {
   jogar: handlePlay,
   inventario: handleInventory,
   progresso: handleProgress,
   ranking: handleRanking,
+  saldo: handleBalance,
+  wishlist: handleWishlist,
+  perks: handlePerks,
 };
 
 const commandBody = commands.map((c) => c.toJSON());
@@ -223,6 +447,9 @@ client.on('guildCreate', async (guild) => {
 });
 
 client.on('interactionCreate', async (interaction) => {
+  if (interaction.isAutocomplete()) {
+    return handleAutocomplete(interaction).catch((err) => console.error(err));
+  }
   if (!interaction.isChatInputCommand()) return;
   const handler = handlers[interaction.commandName];
   if (!handler) return;
