@@ -24,6 +24,8 @@ Os personagens vêm do [AniList](https://anilist.co) (os mais favoritados), com 
 - Acertou alguém **fora da wishlist**: cada acerto dá **10% do valor** em moedas. Com 4 pedaços, você ganha um bônus de **50% do valor** e o personagem não entra no inventário.
 - Os pedaços continuam guardados se você tirar ou colocar o personagem na wishlist. O que vale é se ele está na wishlist no momento do 4º acerto.
 - Em **35%** das rodadas, o personagem sai das wishlists de quem jogou naquele canal nos últimos 30 minutos (quem usou `/jogar` ou mandou palpite). Quanto mais jogadores querem o mesmo personagem, maior a chance dele. Ajuste com `WISHLIST_BOOST` no `.env`.
+- O bot evita repetir os **10 personagens mais recentes por canal**. Esse histórico fica em memória e reinicia quando o bot é reiniciado.
+- O sorteio favorece raridades comuns: cada personagem comum tem peso 8, incomum 6, raro 4, épico 2 e lendário 1. A mesma regra vale para personagens das wishlists.
 
 ### Valor por rank
 
@@ -68,7 +70,7 @@ npm start
 
 ## Configurações (`.env`)
 
-- `CHARACTER_POOL_SIZE` — quantos personagens entram no jogo. Menos personagens = repetem mais = cartas completam mais rápido.
+- `CHARACTER_POOL_SIZE` — quantos personagens entram no jogo (padrão 300). Menos personagens = repetem mais = cartas completam mais rápido.
 - `ROUND_SECONDS` — duração de cada rodada.
 - `/jogar quantidade` — número de rodadas na sessão (padrão 3, máximo 5); as rodadas acontecem em sequência e mantêm o canal ocupado até a sessão terminar.
 - `PIECES_TO_COMPLETE` — pedaços para completar uma carta (padrão 4).

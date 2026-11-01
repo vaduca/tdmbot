@@ -2,11 +2,11 @@
 
 // Rank = posição no AniList por favoritos (1 = mais favoritado). Quanto melhor o rank, maior o valor.
 export const RARITIES = [
-  { maxRank: 10, name: 'Lendário', emoji: '🟨', value: 1000 },
-  { maxRank: 30, name: 'Épico', emoji: '🟪', value: 600 },
-  { maxRank: 60, name: 'Raro', emoji: '🟦', value: 300 },
-  { maxRank: 100, name: 'Incomum', emoji: '🟩', value: 150 },
-  { maxRank: Infinity, name: 'Comum', emoji: '⬜', value: 80 },
+  { maxRank: 10, name: 'Lendário', emoji: '🟨', value: 1000, drawWeight: 1 },
+  { maxRank: 30, name: 'Épico', emoji: '🟪', value: 600, drawWeight: 2 },
+  { maxRank: 60, name: 'Raro', emoji: '🟦', value: 300, drawWeight: 4 },
+  { maxRank: 100, name: 'Incomum', emoji: '🟩', value: 150, drawWeight: 6 },
+  { maxRank: Infinity, name: 'Comum', emoji: '⬜', value: 80, drawWeight: 8 },
 ];
 
 export const COIN = '🪙';
@@ -15,6 +15,8 @@ export const coins = (n) => `${COIN} **${n.toLocaleString('pt-BR')}** TDM Coins`
 export function rarityOf(character) {
   return RARITIES.find((r) => character.rank <= r.maxRank);
 }
+
+export const drawWeightOf = (character) => rarityOf(character).drawWeight;
 
 export const valueOf = (character) => rarityOf(character).value;
 

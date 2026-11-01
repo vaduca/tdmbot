@@ -9,7 +9,7 @@ import {
 } from 'discord.js';
 import {
   loadCharacters,
-  randomCharacter,
+  allCharacters,
   getCharacter,
   isCorrectGuess,
   searchCharacters,
@@ -26,6 +26,7 @@ import {
 import {
   PERKS,
   rarityOf,
+  drawWeightOf,
   valueOf,
   coins,
   wishlistSlots,
@@ -34,7 +35,7 @@ import {
 const {
   DISCORD_TOKEN,
   GUILD_ID,
-  CHARACTER_POOL_SIZE = '150',
+  CHARACTER_POOL_SIZE = '300',
   ROUND_SECONDS = '30',
   PIECES_TO_COMPLETE = '4',
   WISHLIST_BOOST = '0.35',
@@ -45,6 +46,7 @@ const PIECES = Number(PIECES_TO_COMPLETE);
 const RECENT_PLAYER_MS = 30 * 60 * 1000;
 const DEFAULT_ROUNDS = 3;
 const MAX_ROUNDS = 5;
+const RECENT_CHARACTER_LIMIT = 10;
 
 const client = new Client({
   intents: [
@@ -59,6 +61,8 @@ const activeRounds = new Set();
 
 // Quem jogou recentemente em cada canal: channelId -> Map(userId -> último horário)
 const recentPlayers = new Map();
+// IDs dos personagens sorteados recentemente em cada canal.
+const recentCharacters = new Map();
 
 function markPlayer(channelId, userId) {
   if (!recentPlayers.has(channelId)) recentPlayers.set(channelId, new Map());
@@ -75,11 +79,51 @@ function activePlayers(channelId) {
 // Com chance WISHLIST_BOOST, sorteia alguém das wishlists de quem jogou neste canal nos últimos 30 min.
 // Quanto mais jogadores querem o mesmo personagem, maior a chance dele.
 function drawCharacter(channelId) {
-  if (Math.random() < Number(WISHLIST_BOOST)) {
-    const wanted = wishlistIdsOf(activePlayers(channelId)).map(getCharacter).filter(Boolean);
-    if (wanted.length) return wanted[Math.floor(Math.random() * wanted.length)];
+  const pool = allCharacters();
+  if (!pool.length) throw new Error('Não há personagens carregados para sortear.');
+
+  let history = recentCharacters.get(channelId) ?? [];
+  let available = pool.filter((character) => !history.includes(String(character.id)));
+
+  // Quando o pool for menor que o histórico, inicia um novo ciclo sem bloquear o jogo.
+  if (!available.length) {
+    history = [];
+    available = pool;
   }
-  return randomCharacter();
+
+  const availableIds = new Set(available.map((character) => String(character.id)));
+  if (Math.random() < Number(WISHLIST_BOOST)) {
+    const wanted = wishlistIdsOf(activePlayers(channelId))
+      .filter((id) => availableIds.has(String(id)))
+      .map(getCharacter)
+      .filter(Boolean);
+    if (wanted.length) {
+      const character = weightedCharacter(wanted);
+      rememberCharacter(channelId, history, character);
+      return character;
+    }
+  }
+
+  const character = weightedCharacter(available);
+  rememberCharacter(channelId, history, character);
+  return character;
+}
+
+function weightedCharacter(characters) {
+  const totalWeight = characters.reduce((total, character) => total + drawWeightOf(character), 0);
+  let choice = Math.random() * totalWeight;
+
+  for (const character of characters) {
+    choice -= drawWeightOf(character);
+    if (choice < 0) return character;
+  }
+
+  return characters[characters.length - 1];
+}
+
+function rememberCharacter(channelId, history, character) {
+  history.push(String(character.id));
+  recentCharacters.set(channelId, history.slice(-RECENT_CHARACTER_LIMIT));
 }
 
 const commands = [
