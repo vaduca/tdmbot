@@ -1,11 +1,12 @@
-// Armazenamento simples em JSON: pedaços, inventário, moedas, wishlist e perks de cada usuário.
-import { readFileSync, writeFileSync, mkdirSync, renameSync } from 'node:fs';
-import path from 'node:path';
+// Persistência PostgreSQL para moedas, coleção, wishlist, progresso e perks.
+import 'dotenv/config';
+import { readFile } from 'node:fs/promises';
+import { Pool } from 'pg';
 import {
   PERKS,
   DAILY_REWARD,
   DAILY_MISSION,
-  DUPLICATE_SELL_RATE,
+  CARD_SELL_RATE,
   guessReward,
   outsideCompletionBonus,
   wishlistCompletionBonus,
@@ -13,211 +14,372 @@ import {
   valueOf,
 } from './economy.js';
 
-const DB_FILE = path.resolve('data', 'players.json');
+const pool = new Pool(
+  process.env.DATABASE_URL ? { connectionString: process.env.DATABASE_URL } : {},
+);
 
-let db = { users: {} };
-try {
-  db = JSON.parse(readFileSync(DB_FILE, 'utf8'));
-} catch {
-  // primeiro uso
+export async function initializeStore() {
+  const schema = await readFile(new URL('./database/schema.sql', import.meta.url), 'utf8');
+  await pool.query(schema);
 }
 
-function save() {
-  mkdirSync(path.dirname(DB_FILE), { recursive: true });
-  // grava num arquivo temporário e renomeia, pra não corromper se o bot cair no meio
-  writeFileSync(DB_FILE + '.tmp', JSON.stringify(db, null, 2));
-  renameSync(DB_FILE + '.tmp', DB_FILE);
+pool.on('error', (error) => {
+  console.error('Erro inesperado na conexão com PostgreSQL:', error);
+});
+
+async function ensurePlayer(client, userId) {
+  await client.query('INSERT INTO players (discord_id) VALUES ($1) ON CONFLICT (discord_id) DO NOTHING', [String(userId)]);
 }
 
-function user(userId) {
-  const u = (db.users[userId] ??= {});
-  // preenche campos novos para jogadores antigos
-  u.pieces ??= {};
-  u.inventory ??= {};
-  u.correct ??= 0;
-  u.coins ??= 0;
-  u.wishlist ??= [];
-  u.perks ??= {};
-  u.daily ??= { lastClaimAt: 0, streak: 0 };
-  return u;
-}
-
-function dailyMission(u, now = Date.now()) {
-  const date = new Date(now).toISOString().slice(0, 10);
-  if (u.mission?.date !== date) {
-    u.mission = { date, progress: 0, completed: false };
+async function transaction(callback) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const result = await callback(client);
+    await client.query('COMMIT');
+    return result;
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
   }
-  return u.mission;
 }
 
-export function getDailyMission(userId, now = Date.now()) {
-  const u = user(userId);
-  const mission = dailyMission(u, now);
-  save();
-  return { ...mission, target: DAILY_MISSION.target, reward: DAILY_MISSION.reward };
+async function lockPlayer(client, userId) {
+  await ensurePlayer(client, userId);
+  const { rows: [player] } = await client.query(
+    `SELECT discord_id, correct, coins, daily_last_claim_at, daily_streak,
+            to_char(mission_date, 'YYYY-MM-DD') AS mission_date,
+            mission_progress, mission_completed
+     FROM players WHERE discord_id = $1 FOR UPDATE`,
+    [String(userId)],
+  );
+  return player;
 }
 
-export function claimDailyReward(userId, now = Date.now()) {
-  const u = user(userId);
-  const { lastClaimAt, streak: previousStreak } = u.daily;
-  const availableAt = lastClaimAt + DAILY_REWARD.cooldownMs;
-
-  if (now < availableAt) return { ok: false, availableAt };
-
-  const streak = lastClaimAt && now - lastClaimAt <= DAILY_REWARD.streakWindowMs
-    ? Math.min(previousStreak + 1, DAILY_REWARD.maxStreak)
-    : 1;
-  const reward = DAILY_REWARD.base + DAILY_REWARD.streakBonus * (streak - 1);
-
-  u.daily = { lastClaimAt: now, streak };
-  u.coins += reward;
-  save();
-  return { ok: true, reward, streak, balance: u.coins, availableAt: now + DAILY_REWARD.cooldownMs };
+export async function getDailyMission(userId, now = Date.now()) {
+  const today = new Date(now).toISOString().slice(0, 10);
+  return transaction(async (client) => {
+    await ensurePlayer(client, userId);
+    const { rows: [player] } = await client.query(
+      `SELECT to_char(mission_date, 'YYYY-MM-DD') AS mission_date,
+              mission_progress, mission_completed
+       FROM players WHERE discord_id = $1 FOR UPDATE`,
+      [String(userId)],
+    );
+    if (player.mission_date !== today) {
+      await client.query(
+        `UPDATE players SET mission_date = $2, mission_progress = 0,
+                            mission_completed = FALSE, updated_at = NOW()
+         WHERE discord_id = $1`,
+        [String(userId), today],
+      );
+      return { date: today, progress: 0, completed: false, target: DAILY_MISSION.target, reward: DAILY_MISSION.reward };
+    }
+    return {
+      date: today,
+      progress: player.mission_progress,
+      completed: player.mission_completed,
+      target: DAILY_MISSION.target,
+      reward: DAILY_MISSION.reward,
+    };
+  });
 }
 
-export function sellDuplicateCard(userId, character) {
-  const u = user(userId);
-  const id = String(character.id);
-  const copies = u.inventory[id] ?? 0;
-  if (copies === 0) return { ok: false, reason: 'not_owned' };
-  if (copies < 2) return { ok: false, reason: 'keep_last' };
+export async function claimDailyReward(userId, now = Date.now()) {
+  return transaction(async (client) => {
+    const player = await lockPlayer(client, userId);
+    const lastClaimAt = Number(player.daily_last_claim_at);
+    const availableAt = lastClaimAt + DAILY_REWARD.cooldownMs;
+    if (now < availableAt) return { ok: false, availableAt };
 
-  const earned = Math.round(valueOf(character) * DUPLICATE_SELL_RATE);
-  u.inventory[id] = copies - 1;
-  u.coins += earned;
-  save();
-  return { ok: true, earned, copies: u.inventory[id], balance: u.coins };
+    const previousStreak = player.daily_streak;
+    const streak = lastClaimAt && now - lastClaimAt <= DAILY_REWARD.streakWindowMs
+      ? Math.min(previousStreak + 1, DAILY_REWARD.maxStreak)
+      : 1;
+    const reward = DAILY_REWARD.base + DAILY_REWARD.streakBonus * (streak - 1);
+    const balance = Number(player.coins) + reward;
+    await client.query(
+      `UPDATE players SET daily_last_claim_at = $2, daily_streak = $3,
+                          coins = coins + $4, updated_at = NOW()
+       WHERE discord_id = $1`,
+      [String(userId), now, streak, reward],
+    );
+    return { ok: true, reward, streak, balance, availableAt: now + DAILY_REWARD.cooldownMs };
+  });
 }
 
-export function exchangeCards(userAId, characterA, userBId, characterB) {
-  if (userAId === userBId) return { ok: false, reason: 'same_user' };
-  if (String(characterA.id) === String(characterB.id)) return { ok: false, reason: 'same_character' };
+export async function sellCard(userId, character) {
+  return transaction(async (client) => {
+    const characterId = String(character.id);
+    await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [characterId]);
+    const player = await lockPlayer(client, userId);
+    const { rows: [card] } = await client.query(
+      'SELECT copies FROM player_inventory WHERE discord_id = $1 AND character_id = $2 FOR UPDATE',
+      [String(userId), characterId],
+    );
+    const copies = card?.copies ?? 0;
+    if (copies === 0) return { ok: false, reason: 'not_owned' };
+    const earned = Math.round(valueOf(character) * CARD_SELL_RATE);
+    await client.query('DELETE FROM player_inventory WHERE discord_id = $1 AND character_id = $2', [String(userId), characterId]);
+    await client.query('UPDATE players SET coins = coins + $2, updated_at = NOW() WHERE discord_id = $1', [String(userId), earned]);
+    return { ok: true, earned, copies: 0, balance: Number(player.coins) + earned };
+  });
+}
 
-  const userA = user(userAId);
-  const userB = user(userBId);
+export async function exchangeCards(userAId, characterA, userBId, characterB) {
+  const idA = String(userAId);
+  const idB = String(userBId);
   const characterAId = String(characterA.id);
   const characterBId = String(characterB.id);
+  if (idA === idB) return { ok: false, reason: 'same_user' };
+  if (characterAId === characterBId) return { ok: false, reason: 'same_character' };
 
-  if (!(userA.inventory[characterAId] > 0) || !(userB.inventory[characterBId] > 0)) {
-    return { ok: false, reason: 'card_unavailable' };
-  }
+  return transaction(async (client) => {
+    for (const characterId of [characterAId, characterBId].sort()) {
+      await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [characterId]);
+    }
+    const orderedIds = [idA, idB].sort();
+    for (const id of orderedIds) await ensurePlayer(client, id);
+    await client.query('SELECT discord_id FROM players WHERE discord_id = ANY($1::text[]) ORDER BY discord_id FOR UPDATE', [orderedIds]);
 
-  userA.inventory[characterAId]--;
-  userB.inventory[characterBId]--;
-  if (userA.inventory[characterAId] === 0) delete userA.inventory[characterAId];
-  if (userB.inventory[characterBId] === 0) delete userB.inventory[characterBId];
-  userA.inventory[characterBId] = (userA.inventory[characterBId] ?? 0) + 1;
-  userB.inventory[characterAId] = (userB.inventory[characterAId] ?? 0) + 1;
-  save();
-  return { ok: true };
+    const { rows } = await client.query(
+      `SELECT discord_id, character_id, copies FROM player_inventory
+       WHERE (discord_id = $1 AND character_id = $2)
+          OR (discord_id = $3 AND character_id = $4)
+       FOR UPDATE`,
+      [idA, characterAId, idB, characterBId],
+    );
+    const copiesA = rows.find((row) => row.discord_id === idA && row.character_id === characterAId)?.copies ?? 0;
+    const copiesB = rows.find((row) => row.discord_id === idB && row.character_id === characterBId)?.copies ?? 0;
+    if (copiesA < 1 || copiesB < 1) return { ok: false, reason: 'card_unavailable' };
+
+    for (const [ownerId, cardId] of [[idA, characterAId], [idB, characterBId]]) {
+      await client.query('DELETE FROM player_inventory WHERE discord_id = $1 AND character_id = $2', [ownerId, cardId]);
+    }
+    await client.query(
+      'INSERT INTO player_inventory (discord_id, character_id, copies) VALUES ($1, $2, 1)',
+      [idA, characterBId],
+    );
+    await client.query(
+      'INSERT INTO player_inventory (discord_id, character_id, copies) VALUES ($1, $2, 1)',
+      [idB, characterAId],
+    );
+    return { ok: true };
+  });
 }
 
-/**
- * Registra um acerto.
- * - Personagem na wishlist: ganha 1 pedaço; com todos os pedaços entra no inventário + bônus de 100% do valor.
- * - Fora da wishlist: cada acerto dá moedas; com todos os pedaços ganha bônus de 50% do valor (não vai pro inventário).
- */
-export function recordCorrectGuess(userId, character, piecesToComplete) {
-  const u = user(userId);
-  const mission = dailyMission(u);
-  const id = String(character.id);
-  const inWishlist = u.wishlist.includes(id);
-  u.correct++;
+export async function recordCorrectGuess(userId, character, piecesToComplete) {
+  return transaction(async (client) => {
+    const id = String(userId);
+    const characterId = String(character.id);
+    // Serializa disputas pelo mesmo personagem, inclusive quando ainda não há linha de inventário.
+    await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [characterId]);
+    const player = await lockPlayer(client, userId);
+    const today = new Date().toISOString().slice(0, 10);
+    const missionProgress = player.mission_date === today ? player.mission_progress : 0;
+    const missionAlreadyCompleted = player.mission_date === today && player.mission_completed;
 
-  let earned = inWishlist ? 0 : guessReward(character);
-  let pieces = (u.pieces[id] ?? 0) + 1;
-  const completed = pieces >= piecesToComplete;
+    const { rows: [owner] } = await client.query(
+      'SELECT discord_id FROM player_inventory WHERE character_id = $1 FOR UPDATE',
+      [characterId],
+    );
 
-  if (completed) {
-    delete u.pieces[id];
-    pieces = piecesToComplete;
-    if (inWishlist) {
-      u.inventory[id] = (u.inventory[id] ?? 0) + 1;
-      earned += wishlistCompletionBonus(character);
-    } else {
-      earned += outsideCompletionBonus(character);
+    if (owner) {
+      const progress = Math.min(missionProgress + 1, DAILY_MISSION.target);
+      const missionReward = progress >= DAILY_MISSION.target && !missionAlreadyCompleted ? DAILY_MISSION.reward : 0;
+      const missionCompleted = missionAlreadyCompleted || missionReward > 0;
+      const earned = guessReward(character);
+      const balance = Number(player.coins) + earned + missionReward;
+      await client.query(
+        `UPDATE players SET correct = correct + 1, coins = coins + $2,
+                            mission_date = $3, mission_progress = $4,
+                            mission_completed = $5, updated_at = NOW()
+         WHERE discord_id = $1`,
+        [id, earned + missionReward, today, progress, missionCompleted],
+      );
+      return {
+        alreadyOwned: true,
+        ownerId: owner.discord_id,
+        inWishlist: false,
+        pieces: 0,
+        completed: false,
+        earned,
+        balance,
+        copies: 0,
+        mission: { progress, target: DAILY_MISSION.target, completed: missionCompleted, reward: missionReward },
+      };
     }
-  } else {
-    u.pieces[id] = pieces;
-  }
 
-  mission.progress = Math.min(mission.progress + 1, DAILY_MISSION.target);
-  let missionReward = 0;
-  if (mission.progress >= DAILY_MISSION.target && !mission.completed) {
-    mission.completed = true;
-    missionReward = DAILY_MISSION.reward;
-  }
+    const { rowCount: wishlistCount } = await client.query(
+      'SELECT 1 FROM player_wishlist WHERE discord_id = $1 AND character_id = $2',
+      [id, characterId],
+    );
+    const inWishlist = wishlistCount > 0;
+    const { rows: [pieceRow] } = await client.query(
+      'SELECT pieces FROM player_pieces WHERE discord_id = $1 AND character_id = $2 FOR UPDATE',
+      [id, characterId],
+    );
+    let pieces = (pieceRow?.pieces ?? 0) + 1;
+    const completed = pieces >= piecesToComplete;
+    let earned = inWishlist ? 0 : guessReward(character);
 
-  u.coins += earned + missionReward;
-  save();
+    if (completed) {
+      pieces = piecesToComplete;
+      await client.query('DELETE FROM player_pieces WHERE discord_id = $1 AND character_id = $2', [id, characterId]);
+      if (inWishlist) {
+        earned += wishlistCompletionBonus(character);
+        await client.query(
+          'INSERT INTO player_inventory (discord_id, character_id, copies) VALUES ($1, $2, 1)',
+          [id, characterId],
+        );
+      } else {
+        earned += outsideCompletionBonus(character);
+      }
+    } else {
+      await client.query(
+        `INSERT INTO player_pieces (discord_id, character_id, pieces) VALUES ($1, $2, $3)
+         ON CONFLICT (discord_id, character_id) DO UPDATE SET pieces = EXCLUDED.pieces`,
+        [id, characterId, pieces],
+      );
+    }
+
+    const progress = Math.min(missionProgress + 1, DAILY_MISSION.target);
+    const missionReward = progress >= DAILY_MISSION.target && !missionAlreadyCompleted ? DAILY_MISSION.reward : 0;
+    const missionCompleted = missionAlreadyCompleted || missionReward > 0;
+    const balance = Number(player.coins) + earned + missionReward;
+    await client.query(
+      `UPDATE players SET correct = correct + 1, coins = coins + $2,
+                          mission_date = $3, mission_progress = $4,
+                          mission_completed = $5, updated_at = NOW()
+       WHERE discord_id = $1`,
+      [id, earned + missionReward, today, progress, missionCompleted],
+    );
+    const { rows: [inventoryRow] } = await client.query(
+      'SELECT copies FROM player_inventory WHERE discord_id = $1 AND character_id = $2',
+      [id, characterId],
+    );
+    return {
+      inWishlist,
+      alreadyOwned: false,
+      pieces,
+      completed,
+      earned,
+      balance,
+      copies: inventoryRow?.copies ?? 0,
+      mission: { progress, target: DAILY_MISSION.target, completed: missionCompleted, reward: missionReward },
+    };
+  });
+}
+
+export async function addToWishlist(userId, characterId) {
+  return transaction(async (client) => {
+    await lockPlayer(client, userId);
+    const id = String(userId);
+    const character = String(characterId);
+    const { rows } = await client.query(
+      'SELECT character_id FROM player_wishlist WHERE discord_id = $1 ORDER BY position',
+      [id],
+    );
+    if (rows.some((row) => row.character_id === character)) return { ok: false, reason: 'already' };
+    const slots = wishlistSlots({ perks: await getPerks(client, id) });
+    if (rows.length >= slots) return { ok: false, reason: 'full', slots };
+    const { rows: [positionRow] } = await client.query(
+      'SELECT COALESCE(MAX(position), -1) + 1 AS position FROM player_wishlist WHERE discord_id = $1',
+      [id],
+    );
+    await client.query(
+      'INSERT INTO player_wishlist (discord_id, character_id, position) VALUES ($1, $2, $3)',
+      [id, character, positionRow.position],
+    );
+    return { ok: true, used: rows.length + 1, slots };
+  });
+}
+
+async function getPerks(client, userId) {
+  const { rows } = await client.query('SELECT perk_id, level FROM player_perks WHERE discord_id = $1', [userId]);
+  return Object.fromEntries(rows.map((row) => [row.perk_id, row.level]));
+}
+
+export async function removeFromWishlist(userId, characterId) {
+  return transaction(async (client) => {
+    await lockPlayer(client, userId);
+    const { rowCount } = await client.query(
+      'DELETE FROM player_wishlist WHERE discord_id = $1 AND character_id = $2',
+      [String(userId), String(characterId)],
+    );
+    return rowCount > 0;
+  });
+}
+
+export async function buyPerk(userId, perkId) {
+  return transaction(async (client) => {
+    const player = await lockPlayer(client, userId);
+    const perk = PERKS[perkId];
+    const perks = await getPerks(client, String(userId));
+    const level = perks[perkId] ?? 0;
+    if (level >= perk.maxLevel) return { ok: false, reason: 'max' };
+    const cost = perk.cost(level + 1);
+    const balance = Number(player.coins);
+    if (balance < cost) return { ok: false, reason: 'coins', cost, balance };
+    await client.query('UPDATE players SET coins = coins - $2, updated_at = NOW() WHERE discord_id = $1', [String(userId), cost]);
+    await client.query(
+      `INSERT INTO player_perks (discord_id, perk_id, level) VALUES ($1, $2, $3)
+       ON CONFLICT (discord_id, perk_id) DO UPDATE SET level = EXCLUDED.level`,
+      [String(userId), perkId, level + 1],
+    );
+    return { ok: true, level: level + 1, cost, balance: balance - cost };
+  });
+}
+
+export async function wishlistIdsOf(userIds) {
+  if (!userIds.length) return [];
+  const { rows } = await pool.query(
+    'SELECT character_id FROM player_wishlist WHERE discord_id = ANY($1::text[])',
+    [userIds.map(String)],
+  );
+  return rows.map((row) => row.character_id);
+}
+
+export async function getUser(userId) {
+  await ensurePlayer(pool, userId);
+  const id = String(userId);
+  const [playerResult, piecesResult, inventoryResult, wishlistResult, perksResult] = await Promise.all([
+    pool.query(
+      `SELECT correct, coins, daily_last_claim_at, daily_streak,
+              to_char(mission_date, 'YYYY-MM-DD') AS mission_date,
+              mission_progress, mission_completed
+       FROM players WHERE discord_id = $1`,
+      [id],
+    ),
+    pool.query('SELECT character_id, pieces FROM player_pieces WHERE discord_id = $1', [id]),
+    pool.query('SELECT character_id, copies FROM player_inventory WHERE discord_id = $1', [id]),
+    pool.query('SELECT character_id FROM player_wishlist WHERE discord_id = $1 ORDER BY position', [id]),
+    pool.query('SELECT perk_id, level FROM player_perks WHERE discord_id = $1', [id]),
+  ]);
+  const player = playerResult.rows[0];
   return {
-    inWishlist,
-    pieces,
-    completed,
-    earned,
-    balance: u.coins,
-    copies: u.inventory[id] ?? 0,
-    mission: {
-      progress: mission.progress,
-      target: DAILY_MISSION.target,
-      completed: mission.completed,
-      reward: missionReward,
-    },
+    pieces: Object.fromEntries(piecesResult.rows.map((row) => [row.character_id, row.pieces])),
+    inventory: Object.fromEntries(inventoryResult.rows.map((row) => [row.character_id, row.copies])),
+    correct: player.correct,
+    coins: Number(player.coins),
+    wishlist: wishlistResult.rows.map((row) => row.character_id),
+    perks: Object.fromEntries(perksResult.rows.map((row) => [row.perk_id, row.level])),
+    daily: { lastClaimAt: Number(player.daily_last_claim_at), streak: player.daily_streak },
+    mission: { date: player.mission_date, progress: player.mission_progress, completed: player.mission_completed },
   };
 }
 
-export function addToWishlist(userId, characterId) {
-  const u = user(userId);
-  const id = String(characterId);
-  if (u.wishlist.includes(id)) return { ok: false, reason: 'already' };
-  if (u.wishlist.length >= wishlistSlots(u)) return { ok: false, reason: 'full', slots: wishlistSlots(u) };
-  u.wishlist.push(id);
-  save();
-  return { ok: true, used: u.wishlist.length, slots: wishlistSlots(u) };
-}
-
-export function removeFromWishlist(userId, characterId) {
-  const u = user(userId);
-  const index = u.wishlist.indexOf(String(characterId));
-  if (index === -1) return false;
-  u.wishlist.splice(index, 1);
-  save();
-  return true;
-}
-
-export function buyPerk(userId, perkId) {
-  const u = user(userId);
-  const perk = PERKS[perkId];
-  const level = u.perks[perkId] ?? 0;
-  if (level >= perk.maxLevel) return { ok: false, reason: 'max' };
-  const cost = perk.cost(level + 1);
-  if (u.coins < cost) return { ok: false, reason: 'coins', cost, balance: u.coins };
-  u.coins -= cost;
-  u.perks[perkId] = level + 1;
-  save();
-  return { ok: true, level: level + 1, cost, balance: u.coins };
-}
-
-// Todos os IDs de personagens nas wishlists desses usuários (com repetição, se mais de um quiser o mesmo)
-export function wishlistIdsOf(userIds) {
-  return userIds.flatMap((id) => db.users[id]?.wishlist ?? []);
-}
-
-export function getUser(userId) {
-  return user(userId);
-}
-
-export function ranking(limit = 10) {
-  return Object.keys(db.users)
-    .map((id) => {
-      const u = user(id);
-      return {
-        id,
-        cards: Object.values(u.inventory).reduce((a, b) => a + b, 0),
-        coins: u.coins,
-        correct: u.correct,
-      };
-    })
-    .sort((a, b) => b.cards - a.cards || b.coins - a.coins || b.correct - a.correct)
-    .slice(0, limit);
+export async function ranking(limit = 10) {
+  const { rows } = await pool.query(
+    `SELECT p.discord_id AS id, COALESCE(SUM(i.copies), 0)::int AS cards,
+            p.coins, p.correct
+     FROM players p LEFT JOIN player_inventory i ON i.discord_id = p.discord_id
+     GROUP BY p.discord_id
+     ORDER BY cards DESC, p.coins DESC, p.correct DESC
+     LIMIT $1`,
+    [limit],
+  );
+  return rows.map((row) => ({ ...row, coins: Number(row.coins) }));
 }

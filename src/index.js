@@ -20,9 +20,10 @@ import {
 } from './characters.js';
 import {
   recordCorrectGuess,
+  initializeStore,
   getDailyMission,
   claimDailyReward,
-  sellDuplicateCard,
+  sellCard,
   exchangeCards,
   getUser,
   ranking,
@@ -88,7 +89,7 @@ function activePlayers(channelId) {
 
 // Com chance WISHLIST_BOOST, sorteia alguém das wishlists de quem jogou neste canal nos últimos 30 min.
 // Quanto mais jogadores querem o mesmo personagem, maior a chance dele.
-function drawCharacter(channelId, training = false) {
+async function drawCharacter(channelId, training = false) {
   const pool = allCharacters();
   if (!pool.length) throw new Error('Não há personagens carregados para sortear.');
 
@@ -103,7 +104,7 @@ function drawCharacter(channelId, training = false) {
 
   const availableIds = new Set(available.map((character) => String(character.id)));
   if (Math.random() < Number(WISHLIST_BOOST)) {
-    const wanted = wishlistIdsOf(activePlayers(channelId))
+    const wanted = (await wishlistIdsOf(activePlayers(channelId)))
       .filter((id) => availableIds.has(String(id)))
       .map(getCharacter)
       .filter(Boolean);
@@ -191,9 +192,9 @@ const commands = [
     .addUserOption((o) => o.setName('usuario').setDescription('Ver o perfil de outra pessoa')),
   new SlashCommandBuilder()
     .setName('vender')
-    .setDescription('Vende uma cópia extra de uma carta por TDM Coins')
+    .setDescription('Vende uma carta da coleção e libera o personagem por TDM Coins')
     .addStringOption((o) =>
-      o.setName('personagem').setDescription('Personagem duplicado para vender').setRequired(true).setAutocomplete(true),
+      o.setName('personagem').setDescription('Personagem da sua coleção para vender').setRequired(true).setAutocomplete(true),
     ),
   new SlashCommandBuilder()
     .setName('trocar')
@@ -318,12 +319,23 @@ function playRound(interaction, character, training = false) {
           return;
         }
 
-        const result = recordCorrectGuess(message.author.id, character, PIECES);
+        const result = await recordCorrectGuess(message.author.id, character, PIECES);
         const win = new EmbedBuilder()
           .setThumbnail(character.image)
           .setColor(result.completed ? Colors.Gold : result.inWishlist ? Colors.Green : Colors.Yellow);
 
-        if (result.completed && result.inWishlist) {
+        if (result.alreadyOwned) {
+          const ownership = result.ownerId === message.author.id
+            ? 'Você já possui este personagem.'
+            : `Este personagem já pertence a <@${result.ownerId}>.`;
+          win
+            .setTitle(`🪙 ${character.name} já foi coletado`)
+            .setDescription(`${message.author} acertou! ${ownership}\nVocê recebeu ${coins(result.earned)} em vez de um pedaço.`)
+            .addFields(
+              { name: 'Raridade', value: rarityLabel(character), inline: true },
+              { name: 'Recompensa', value: coins(result.earned), inline: true },
+            );
+        } else if (result.completed && result.inWishlist) {
           win
             .setTitle(`🎉 Carta completa: ${character.name}!`)
             .setDescription(
@@ -351,21 +363,23 @@ function playRound(interaction, character, training = false) {
             );
         }
 
-        win.addFields(
-          { name: 'Pedaços', value: `${pieceBar(result.pieces)} (${result.pieces}/${PIECES})`, inline: true },
-          { name: 'Raridade', value: rarityLabel(character), inline: true },
-          {
-            name: 'Missão diária',
-            value: result.mission.completed
-              ? result.mission.reward > 0
-                ? `Concluída! Você recebeu ${coins(result.mission.reward)}.`
-                : 'Concluída.'
-              : `${result.mission.progress}/${result.mission.target} acertos`,
-            inline: false,
-          },
-        );
+        if (!result.alreadyOwned) {
+          win.addFields(
+            { name: 'Pedaços', value: `${pieceBar(result.pieces)} (${result.pieces}/${PIECES})`, inline: true },
+            { name: 'Raridade', value: rarityLabel(character), inline: true },
+          );
+        }
+        win.addFields({
+          name: 'Missão diária',
+          value: result.mission.completed
+            ? result.mission.reward > 0
+              ? `Concluída! Você recebeu ${coins(result.mission.reward)}.`
+              : 'Concluída.'
+            : `${result.mission.progress}/${result.mission.target} acertos`,
+          inline: false,
+        });
         win.setFooter({ text: `Saldo: ${result.balance.toLocaleString('pt-BR')} TDM Coins` });
-        await message.reply({ embeds: [win] });
+        await message.reply({ embeds: [win], allowedMentions: { users: [] } });
       } catch (error) {
         reject(error);
       }
@@ -410,7 +424,7 @@ async function handlePlay(interaction, training = false) {
         : `🎮 ${interaction.user}, começando **${rounds} rodada(s)**. A próxima começa quando a atual terminar.`,
     });
     for (let i = 0; i < rounds; i++) {
-      const character = drawCharacter(channelId, training);
+      const character = await drawCharacter(channelId, training);
       await playRound(interaction, character, training);
     }
     await interaction.channel.send(
@@ -425,7 +439,7 @@ async function handlePlay(interaction, training = false) {
 
 async function handleInventory(interaction) {
   const target = interaction.options.getUser('usuario') ?? interaction.user;
-  const entries = Object.entries(getUser(target.id).inventory);
+  const entries = Object.entries((await getUser(target.id)).inventory);
 
   if (entries.length === 0) {
     return interaction.reply({
@@ -457,7 +471,7 @@ async function handleInventory(interaction) {
 }
 
 async function handleProgress(interaction) {
-  const u = getUser(interaction.user.id);
+  const u = await getUser(interaction.user.id);
   const entries = Object.entries(u.pieces);
   if (entries.length === 0) {
     return interaction.reply({ content: 'Nenhum pedaço em andamento. Use `/jogar`!', flags: MessageFlags.Ephemeral });
@@ -481,7 +495,7 @@ async function handleProgress(interaction) {
 }
 
 async function handleRanking(interaction) {
-  const top = ranking(10);
+  const top = await ranking(10);
   if (top.length === 0) return interaction.reply('Ninguém jogou ainda!');
 
   const medals = ['🥇', '🥈', '🥉'];
@@ -499,7 +513,7 @@ async function handleRanking(interaction) {
 
 async function handleBalance(interaction) {
   const target = interaction.options.getUser('usuario') ?? interaction.user;
-  const u = getUser(target.id);
+  const u = await getUser(target.id);
   const embed = new EmbedBuilder()
     .setTitle(`🪙 Saldo de ${target.username}`)
     .setDescription(coins(u.coins))
@@ -510,7 +524,7 @@ async function handleBalance(interaction) {
 
 async function handleProfile(interaction) {
   const target = interaction.options.getUser('usuario') ?? interaction.user;
-  const u = getUser(target.id);
+  const u = await getUser(target.id);
   const inventoryEntries = Object.entries(u.inventory);
   const totalCards = inventoryEntries.reduce((total, [, copies]) => total + copies, 0);
   const pieceEntries = Object.entries(u.pieces);
@@ -550,18 +564,13 @@ async function handleSell(interaction) {
     });
   }
 
-  const result = sellDuplicateCard(interaction.user.id, character);
+  const result = await sellCard(interaction.user.id, character);
   if (!result.ok) {
-    const message = result.reason === 'not_owned'
-      ? `Você não tem **${character.name}** na coleção.`
-      : `Você só tem uma cópia de **${character.name}**; a última cópia não pode ser vendida.`;
-    return interaction.reply({ content: message, flags: MessageFlags.Ephemeral });
+    return interaction.reply({ content: `Você não tem **${character.name}** na coleção.`, flags: MessageFlags.Ephemeral });
   }
 
   return interaction.reply({
-    content:
-      `Você vendeu uma cópia de **${character.name}** por ${coins(result.earned)}. ` +
-      `Restam **${result.copies}** cópia(s); seu saldo é ${coins(result.balance)}.`,
+    content: `Você vendeu **${character.name}** por ${coins(result.earned)}. A carta saiu da sua coleção e pode ser obtida por outro jogador. Seu saldo é ${coins(result.balance)}.`,
     flags: MessageFlags.Ephemeral,
   });
 }
@@ -606,8 +615,9 @@ async function handleTrade(interaction) {
     return interaction.reply({ content: 'Escolha duas cartas diferentes para a troca.', flags: MessageFlags.Ephemeral });
   }
 
-  const proposerInventory = getUser(interaction.user.id).inventory;
-  const targetInventory = getUser(target.id).inventory;
+  const [proposer, recipient] = await Promise.all([getUser(interaction.user.id), getUser(target.id)]);
+  const proposerInventory = proposer.inventory;
+  const targetInventory = recipient.inventory;
   if (!(proposerInventory[String(offered.id)] > 0)) {
     return interaction.reply({ content: `Você não tem **${offered.name}** na coleção.`, flags: MessageFlags.Ephemeral });
   }
@@ -645,7 +655,7 @@ async function handleTrade(interaction) {
     }
 
     if (action === 'accept') {
-      const result = exchangeCards(interaction.user.id, offered, target.id, wanted);
+      const result = await exchangeCards(interaction.user.id, offered, target.id, wanted);
       collector.stop(result.ok ? 'accepted' : 'unavailable');
       const description = result.ok
         ? `A troca foi concluída. ${interaction.user} recebeu **${wanted.name}** e ${target} recebeu **${offered.name}**.`
@@ -682,7 +692,7 @@ async function handleTrade(interaction) {
 }
 
 async function handleDaily(interaction) {
-  const result = claimDailyReward(interaction.user.id);
+  const result = await claimDailyReward(interaction.user.id);
   if (!result.ok) {
     return interaction.reply({
       content: `🎁 Você já resgatou sua recompensa. A próxima fica disponível <t:${Math.ceil(result.availableAt / 1000)}:R>.`,
@@ -702,7 +712,7 @@ async function handleDaily(interaction) {
 }
 
 async function handleMission(interaction) {
-  const mission = getDailyMission(interaction.user.id);
+  const mission = await getDailyMission(interaction.user.id);
   const status = mission.completed
     ? 'Missão concluída! A recompensa já foi creditada.'
     : `Progresso: **${mission.progress}/${mission.target}** acertos.`;
@@ -748,7 +758,7 @@ async function handleWishlist(interaction) {
 
   if (sub === 'ver') {
     const target = interaction.options.getUser('usuario') ?? interaction.user;
-    const u = getUser(target.id);
+    const u = await getUser(target.id);
     const slots = wishlistSlots(u);
     const lines = u.wishlist.map((id, i) => {
       const c = getCharacter(id);
@@ -775,7 +785,7 @@ async function handleWishlist(interaction) {
   }
 
   if (sub === 'adicionar') {
-    const result = addToWishlist(interaction.user.id, character.id);
+    const result = await addToWishlist(interaction.user.id, character.id);
     if (!result.ok) {
       const content =
         result.reason === 'already'
@@ -793,7 +803,7 @@ async function handleWishlist(interaction) {
   }
 
   // remover
-  const removed = removeFromWishlist(interaction.user.id, character.id);
+  const removed = await removeFromWishlist(interaction.user.id, character.id);
   return interaction.reply({
     content: removed
       ? `🗑️ **${character.name}** saiu da sua wishlist. Os pedaços que você já tem continuam guardados.`
@@ -804,7 +814,7 @@ async function handleWishlist(interaction) {
 
 async function handlePerks(interaction) {
   const sub = interaction.options.getSubcommand();
-  const u = getUser(interaction.user.id);
+  const u = await getUser(interaction.user.id);
 
   if (sub === 'ver') {
     const fields = Object.entries(PERKS).map(([id, perk]) => {
@@ -827,7 +837,7 @@ async function handlePerks(interaction) {
   // comprar
   const perkId = interaction.options.getString('perk');
   const perk = PERKS[perkId];
-  const result = buyPerk(interaction.user.id, perkId);
+  const result = await buyPerk(interaction.user.id, perkId);
   if (!result.ok) {
     const content =
       result.reason === 'max'
@@ -836,7 +846,9 @@ async function handlePerks(interaction) {
     return interaction.reply({ content, flags: MessageFlags.Ephemeral });
   }
 
-  const extra = perkId === 'wishlist' ? `\nSua wishlist agora tem **${wishlistSlots(getUser(interaction.user.id))}** vagas.` : '';
+  const extra = perkId === 'wishlist'
+    ? `\nSua wishlist agora tem **${wishlistSlots(await getUser(interaction.user.id))}** vagas.`
+    : '';
   return interaction.reply(
     `${perk.emoji} ${interaction.user} comprou **${perk.name} nível ${result.level}** por ${coins(result.cost)}!${extra}`,
   );
@@ -849,18 +861,18 @@ async function handleAutocomplete(interaction) {
   const sub = interaction.options.getSubcommand(false);
   let options = searchCharacters(typed);
   if (interaction.commandName === 'vender') {
-    const inventory = getUser(interaction.user.id).inventory;
+    const inventory = (await getUser(interaction.user.id)).inventory;
     options = searchCharacters(typed, allCharacters().length)
-      .filter((character) => (inventory[String(character.id)] ?? 0) > 1);
+      .filter((character) => (inventory[String(character.id)] ?? 0) > 0);
   } else if (interaction.commandName === 'trocar') {
     const ownerId = focused.name === 'oferece'
       ? interaction.user.id
       : interaction.options.getUser('usuario')?.id;
-    const inventory = ownerId ? getUser(ownerId).inventory : {};
+    const inventory = ownerId ? (await getUser(ownerId)).inventory : {};
     options = searchCharacters(typed, allCharacters().length)
       .filter((character) => (inventory[String(character.id)] ?? 0) > 0);
   } else if (sub === 'remover') {
-    const wishlist = getUser(interaction.user.id).wishlist;
+    const wishlist = (await getUser(interaction.user.id)).wishlist;
     options = wishlist.map(getCharacter).filter((c) => c && options.includes(c));
   }
   await interaction.respond(
@@ -933,6 +945,7 @@ client.on('interactionCreate', async (interaction) => {
   }
 });
 
+await initializeStore();
 console.log('Carregando personagens do AniList...');
 const pool = await loadCharacters(Number(CHARACTER_POOL_SIZE));
 console.log(`${pool.length} personagens carregados.`);
