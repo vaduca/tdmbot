@@ -27,6 +27,7 @@ import {
   exchangeCards,
   getUser,
   ranking,
+  characterOwnerCounts,
   addToWishlist,
   removeFromWishlist,
   buyPerk,
@@ -182,6 +183,9 @@ const commands = [
     .addUserOption((o) => o.setName('usuario').setDescription('Ver o inventário de outra pessoa')),
   new SlashCommandBuilder().setName('progresso').setDescription('Mostra os pedaços de cartas que você está juntando'),
   new SlashCommandBuilder().setName('ranking').setDescription('Quem tem mais cartas no servidor'),
+  new SlashCommandBuilder()
+    .setName('top-personagens')
+    .setDescription('Mostra os 10 personagens de maior valor'),
   new SlashCommandBuilder()
     .setName('saldo')
     .setDescription('Mostra suas TDM Coins')
@@ -508,6 +512,35 @@ async function handleRanking(interaction) {
   await interaction.reply({
     embeds: [new EmbedBuilder().setTitle('🏆 Ranking').setDescription(lines.join('\n')).setColor(Colors.Gold)],
     allowedMentions: { users: [] },
+  });
+}
+
+async function handleTopCharacters(interaction) {
+  const characters = allCharacters()
+    .slice()
+    .sort((a, b) => valueOf(b) - valueOf(a) || a.rank - b.rank)
+    .slice(0, 10);
+  if (!characters.length) {
+    return interaction.reply({ content: 'Não há personagens carregados para montar o ranking.', flags: MessageFlags.Ephemeral });
+  }
+
+  const owners = await characterOwnerCounts(characters.map((character) => character.id));
+  const lines = characters.map((character, index) => {
+    const rarity = rarityOf(character);
+    const ownerCount = owners[String(character.id)] ?? 0;
+    const ownerStatus = ownerCount ? 'Já tem dono' : 'Disponível';
+    return `**${index + 1}. ${character.name}** — ${rarity.emoji} ${rarity.name}\n` +
+      `　${valueOf(character).toLocaleString('pt-BR')} TDM Coins · Rank AniList #${character.rank} · ${ownerStatus}`;
+  });
+
+  await interaction.reply({
+    embeds: [
+      new EmbedBuilder()
+        .setTitle('💎 Personagens de maior valor')
+        .setDescription(lines.join('\n'))
+        .setColor(Colors.Gold)
+        .setFooter({ text: 'O valor é definido pela raridade; personagens da mesma raridade têm o mesmo valor.' }),
+    ],
   });
 }
 
@@ -889,6 +922,7 @@ const handlers = {
   inventario: handleInventory,
   progresso: handleProgress,
   ranking: handleRanking,
+  'top-personagens': handleTopCharacters,
   saldo: handleBalance,
   perfil: handleProfile,
   vender: handleSell,

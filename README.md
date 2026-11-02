@@ -14,6 +14,7 @@ Os personagens vêm do [AniList](https://anilist.co) (os mais favoritados), com 
 | `/inventario [usuario]` | Mostra as cartas completas |
 | `/progresso` | Mostra os pedaços que você está juntando (só você vê) |
 | `/ranking` | Top 10 por cartas, moedas e acertos |
+| `/top-personagens` | Os 10 personagens de maior valor, raridade e disponibilidade |
 | `/saldo [usuario]` | Mostra as TDM Coins |
 | `/perfil [usuario]` | Mostra coleção, acertos, saldo, wishlist, progresso e sequência diária |
 | `/vender personagem` | Vende sua carta por 100% do valor e libera o personagem para outro jogador |

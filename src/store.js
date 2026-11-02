@@ -383,3 +383,15 @@ export async function ranking(limit = 10) {
   );
   return rows.map((row) => ({ ...row, coins: Number(row.coins) }));
 }
+
+export async function characterOwnerCounts(characterIds) {
+  if (!characterIds.length) return {};
+  const { rows } = await pool.query(
+    `SELECT character_id, COUNT(*)::int AS owners
+     FROM player_inventory
+     WHERE character_id = ANY($1::text[])
+     GROUP BY character_id`,
+    [characterIds.map(String)],
+  );
+  return Object.fromEntries(rows.map((row) => [row.character_id, row.owners]));
+}
