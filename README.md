@@ -19,6 +19,7 @@ Os personagens vêm do [AniList](https://anilist.co) (os mais favoritados), com 
 | `/vender personagem` | Vende uma cópia extra por 25% do valor da carta; a última cópia é preservada |
 | `/trocar usuario oferece quer` | Propõe uma troca de cartas; o destinatário precisa confirmar |
 | `/diario` | Resgata TDM Coins uma vez a cada 24 horas; sequência de até 7 dias aumenta o prêmio |
+| `/missao` | Mostra a missão diária: acerte 3 personagens no modo normal para ganhar 100 TDM Coins |
 | `/recentes` | Mostra as 10 últimas rodadas do canal e se alguém acertou |
 | `/wishlist ver / adicionar / remover` | Gerencia a wishlist (o nome do personagem tem autocomplete) |
 | `/perks ver / comprar` | Mostra e compra perks com TDM Coins |
@@ -26,6 +27,7 @@ Os personagens vêm do [AniList](https://anilist.co) (os mais favoritados), com 
 ## Wishlist e TDM Coins 🪙
 
 - `/diario` concede 100 TDM Coins no primeiro resgate e +25 por dia consecutivo, até 250 no 7º dia. O resgate libera a cada 24 horas; após 48 horas sem resgatar, a sequência volta ao primeiro dia.
+- `/missao` acompanha até 3 acertos no modo normal por dia e concede 100 TDM Coins automaticamente ao completar. O progresso reinicia à meia-noite UTC; `/treino` não conta.
 
 - Só personagens que estão na sua **wishlist** entram no inventário.
 - Acertou alguém **da wishlist**: ganha 1 pedaço. Com 4 pedaços, a carta entra no inventário e você ganha um bônus de **100% do valor** do personagem.

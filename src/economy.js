@@ -21,6 +21,11 @@ export const DAILY_REWARD = {
   streakWindowMs: 48 * 60 * 60 * 1000,
 };
 
+export const DAILY_MISSION = {
+  target: 3,
+  reward: 100,
+};
+
 export function rarityOf(character) {
   return RARITIES.find((r) => character.rank <= r.maxRank);
 }

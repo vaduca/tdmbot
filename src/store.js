@@ -4,6 +4,7 @@ import path from 'node:path';
 import {
   PERKS,
   DAILY_REWARD,
+  DAILY_MISSION,
   DUPLICATE_SELL_RATE,
   guessReward,
   outsideCompletionBonus,
@@ -39,6 +40,21 @@ function user(userId) {
   u.perks ??= {};
   u.daily ??= { lastClaimAt: 0, streak: 0 };
   return u;
+}
+
+function dailyMission(u, now = Date.now()) {
+  const date = new Date(now).toISOString().slice(0, 10);
+  if (u.mission?.date !== date) {
+    u.mission = { date, progress: 0, completed: false };
+  }
+  return u.mission;
+}
+
+export function getDailyMission(userId, now = Date.now()) {
+  const u = user(userId);
+  const mission = dailyMission(u, now);
+  save();
+  return { ...mission, target: DAILY_MISSION.target, reward: DAILY_MISSION.reward };
 }
 
 export function claimDailyReward(userId, now = Date.now()) {
@@ -103,6 +119,7 @@ export function exchangeCards(userAId, characterA, userBId, characterB) {
  */
 export function recordCorrectGuess(userId, character, piecesToComplete) {
   const u = user(userId);
+  const mission = dailyMission(u);
   const id = String(character.id);
   const inWishlist = u.wishlist.includes(id);
   u.correct++;
@@ -124,9 +141,29 @@ export function recordCorrectGuess(userId, character, piecesToComplete) {
     u.pieces[id] = pieces;
   }
 
-  u.coins += earned;
+  mission.progress = Math.min(mission.progress + 1, DAILY_MISSION.target);
+  let missionReward = 0;
+  if (mission.progress >= DAILY_MISSION.target && !mission.completed) {
+    mission.completed = true;
+    missionReward = DAILY_MISSION.reward;
+  }
+
+  u.coins += earned + missionReward;
   save();
-  return { inWishlist, pieces, completed, earned, balance: u.coins, copies: u.inventory[id] ?? 0 };
+  return {
+    inWishlist,
+    pieces,
+    completed,
+    earned,
+    balance: u.coins,
+    copies: u.inventory[id] ?? 0,
+    mission: {
+      progress: mission.progress,
+      target: DAILY_MISSION.target,
+      completed: mission.completed,
+      reward: missionReward,
+    },
+  };
 }
 
 export function addToWishlist(userId, characterId) {

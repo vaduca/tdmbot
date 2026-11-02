@@ -20,6 +20,7 @@ import {
 } from './characters.js';
 import {
   recordCorrectGuess,
+  getDailyMission,
   claimDailyReward,
   sellDuplicateCard,
   exchangeCards,
@@ -205,6 +206,7 @@ const commands = [
       o.setName('quer').setDescription('A carta que deseja receber').setRequired(true).setAutocomplete(true),
     ),
   new SlashCommandBuilder().setName('diario').setDescription('Resgata sua recompensa diária em TDM Coins'),
+  new SlashCommandBuilder().setName('missao').setDescription('Mostra sua missão diária e o progresso'),
   new SlashCommandBuilder().setName('recentes').setDescription('Mostra as últimas rodadas deste canal'),
   new SlashCommandBuilder()
     .setName('wishlist')
@@ -352,6 +354,15 @@ function playRound(interaction, character, training = false) {
         win.addFields(
           { name: 'Pedaços', value: `${pieceBar(result.pieces)} (${result.pieces}/${PIECES})`, inline: true },
           { name: 'Raridade', value: rarityLabel(character), inline: true },
+          {
+            name: 'Missão diária',
+            value: result.mission.completed
+              ? result.mission.reward > 0
+                ? `Concluída! Você recebeu ${coins(result.mission.reward)}.`
+                : 'Concluída.'
+              : `${result.mission.progress}/${result.mission.target} acertos`,
+            inline: false,
+          },
         );
         win.setFooter({ text: `Saldo: ${result.balance.toLocaleString('pt-BR')} TDM Coins` });
         await message.reply({ embeds: [win] });
@@ -690,6 +701,19 @@ async function handleDaily(interaction) {
   await interaction.reply({ embeds: [embed] });
 }
 
+async function handleMission(interaction) {
+  const mission = getDailyMission(interaction.user.id);
+  const status = mission.completed
+    ? 'Missão concluída! A recompensa já foi creditada.'
+    : `Progresso: **${mission.progress}/${mission.target}** acertos.`;
+  const embed = new EmbedBuilder()
+    .setTitle('🎯 Missão diária')
+    .setDescription(`Acerte **${mission.target} personagens** no modo normal para receber ${coins(mission.reward)}.\n\n${status}`)
+    .setFooter({ text: 'O progresso reinicia à meia-noite UTC. Rodadas de treino não contam.' })
+    .setColor(mission.completed ? Colors.Green : Colors.Blurple);
+  return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+}
+
 async function handleRecentRounds(interaction) {
   const rounds = recentRounds.get(interaction.channelId) ?? [];
   if (!rounds.length) {
@@ -858,6 +882,7 @@ const handlers = {
   vender: handleSell,
   trocar: handleTrade,
   diario: handleDaily,
+  missao: handleMission,
   recentes: handleRecentRounds,
   wishlist: handleWishlist,
   perks: handlePerks,
