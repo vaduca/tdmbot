@@ -2,6 +2,10 @@ import 'dotenv/config';
 import {
   Client,
   GatewayIntentBits,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  ComponentType,
   EmbedBuilder,
   SlashCommandBuilder,
   Colors,
@@ -18,6 +22,7 @@ import {
   recordCorrectGuess,
   claimDailyReward,
   sellDuplicateCard,
+  exchangeCards,
   getUser,
   ranking,
   addToWishlist,
@@ -188,6 +193,16 @@ const commands = [
     .setDescription('Vende uma cópia extra de uma carta por TDM Coins')
     .addStringOption((o) =>
       o.setName('personagem').setDescription('Personagem duplicado para vender').setRequired(true).setAutocomplete(true),
+    ),
+  new SlashCommandBuilder()
+    .setName('trocar')
+    .setDescription('Propõe uma troca de cartas para outro jogador')
+    .addUserOption((o) => o.setName('usuario').setDescription('Quem receberá a proposta').setRequired(true))
+    .addStringOption((o) =>
+      o.setName('oferece').setDescription('A carta que você oferece').setRequired(true).setAutocomplete(true),
+    )
+    .addStringOption((o) =>
+      o.setName('quer').setDescription('A carta que deseja receber').setRequired(true).setAutocomplete(true),
     ),
   new SlashCommandBuilder().setName('diario').setDescription('Resgata sua recompensa diária em TDM Coins'),
   new SlashCommandBuilder().setName('recentes').setDescription('Mostra as últimas rodadas deste canal'),
@@ -540,6 +555,121 @@ async function handleSell(interaction) {
   });
 }
 
+function tradeButtons(interactionId, disabled = false) {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`trade:${interactionId}:accept`)
+        .setLabel('Aceitar')
+        .setStyle(ButtonStyle.Success)
+        .setDisabled(disabled),
+      new ButtonBuilder()
+        .setCustomId(`trade:${interactionId}:decline`)
+        .setLabel('Recusar')
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(disabled),
+      new ButtonBuilder()
+        .setCustomId(`trade:${interactionId}:cancel`)
+        .setLabel('Cancelar proposta')
+        .setStyle(ButtonStyle.Danger)
+        .setDisabled(disabled),
+    ),
+  ];
+}
+
+async function handleTrade(interaction) {
+  const target = interaction.options.getUser('usuario');
+  const offered = getCharacter(interaction.options.getString('oferece'));
+  const wanted = getCharacter(interaction.options.getString('quer'));
+
+  if (target.id === interaction.user.id) {
+    return interaction.reply({ content: 'Você não pode propor uma troca consigo mesmo.', flags: MessageFlags.Ephemeral });
+  }
+  if (target.bot) {
+    return interaction.reply({ content: 'Trocas só podem ser feitas entre jogadores.', flags: MessageFlags.Ephemeral });
+  }
+  if (!offered || !wanted) {
+    return interaction.reply({ content: 'Selecione as cartas usando as opções do autocomplete.', flags: MessageFlags.Ephemeral });
+  }
+  if (offered.id === wanted.id) {
+    return interaction.reply({ content: 'Escolha duas cartas diferentes para a troca.', flags: MessageFlags.Ephemeral });
+  }
+
+  const proposerInventory = getUser(interaction.user.id).inventory;
+  const targetInventory = getUser(target.id).inventory;
+  if (!(proposerInventory[String(offered.id)] > 0)) {
+    return interaction.reply({ content: `Você não tem **${offered.name}** na coleção.`, flags: MessageFlags.Ephemeral });
+  }
+  if (!(targetInventory[String(wanted.id)] > 0)) {
+    return interaction.reply({ content: `${target} não tem **${wanted.name}** na coleção.`, flags: MessageFlags.Ephemeral });
+  }
+
+  const proposal = new EmbedBuilder()
+    .setTitle('Proposta de troca')
+    .setDescription(`${interaction.user} oferece **${offered.name}** por **${wanted.name}** de ${target}.`)
+    .addFields(
+      { name: 'Sua carta', value: rarityLabel(offered), inline: true },
+      { name: 'Carta desejada', value: rarityLabel(wanted), inline: true },
+    )
+    .setColor(Colors.Blurple)
+    .setFooter({ text: 'A proposta expira em 2 minutos. Só o destinatário pode aceitar ou recusar.' });
+
+  await interaction.deferReply();
+  const message = await interaction.editReply({
+    content: target.toString(),
+    embeds: [proposal],
+    components: tradeButtons(interaction.id),
+    allowedMentions: { users: [target.id] },
+  });
+
+  const collector = message.createMessageComponentCollector({ componentType: ComponentType.Button, time: 120_000 });
+  collector.on('collect', async (button) => {
+    const action = button.customId.split(':').at(-1);
+    const isRecipientAction = action === 'accept' || action === 'decline';
+    if (isRecipientAction && button.user.id !== target.id) {
+      return button.reply({ content: 'Só o destinatário pode responder a esta proposta.', flags: MessageFlags.Ephemeral });
+    }
+    if (action === 'cancel' && button.user.id !== interaction.user.id) {
+      return button.reply({ content: 'Só quem criou a proposta pode cancelá-la.', flags: MessageFlags.Ephemeral });
+    }
+
+    if (action === 'accept') {
+      const result = exchangeCards(interaction.user.id, offered, target.id, wanted);
+      collector.stop(result.ok ? 'accepted' : 'unavailable');
+      const description = result.ok
+        ? `A troca foi concluída. ${interaction.user} recebeu **${wanted.name}** e ${target} recebeu **${offered.name}**.`
+        : 'A troca não foi concluída porque uma das cartas não está mais disponível.';
+      return button.update({
+        content: '',
+        embeds: [new EmbedBuilder().setTitle(result.ok ? 'Troca concluída' : 'Troca cancelada').setDescription(description).setColor(result.ok ? Colors.Green : Colors.Red)],
+        components: tradeButtons(interaction.id, true),
+        allowedMentions: { users: [] },
+      });
+    }
+
+    collector.stop(action === 'cancel' ? 'cancelled' : 'declined');
+    const description = action === 'cancel'
+      ? 'Quem propôs a troca cancelou o pedido.'
+      : `${target} recusou a proposta de troca.`;
+    return button.update({
+      content: '',
+      embeds: [new EmbedBuilder().setTitle('Proposta encerrada').setDescription(description).setColor(Colors.Greyple)],
+      components: tradeButtons(interaction.id, true),
+      allowedMentions: { users: [] },
+    });
+  });
+
+  collector.on('end', async (_collected, reason) => {
+    if (reason !== 'time') return;
+    await message.edit({
+      content: '',
+      embeds: [new EmbedBuilder().setTitle('Proposta expirada').setDescription('A troca não foi aceita dentro do prazo.').setColor(Colors.Greyple)],
+      components: tradeButtons(interaction.id, true),
+      allowedMentions: { users: [] },
+    }).catch(() => {});
+  });
+}
+
 async function handleDaily(interaction) {
   const result = claimDailyReward(interaction.user.id);
   if (!result.ok) {
@@ -690,12 +820,21 @@ async function handlePerks(interaction) {
 
 // Sugestões enquanto o usuário digita o nome do personagem
 async function handleAutocomplete(interaction) {
-  const typed = interaction.options.getFocused();
+  const focused = interaction.options.getFocused(true);
+  const typed = focused.value;
   const sub = interaction.options.getSubcommand(false);
   let options = searchCharacters(typed);
   if (interaction.commandName === 'vender') {
     const inventory = getUser(interaction.user.id).inventory;
-    options = options.filter((character) => (inventory[String(character.id)] ?? 0) > 1);
+    options = searchCharacters(typed, allCharacters().length)
+      .filter((character) => (inventory[String(character.id)] ?? 0) > 1);
+  } else if (interaction.commandName === 'trocar') {
+    const ownerId = focused.name === 'oferece'
+      ? interaction.user.id
+      : interaction.options.getUser('usuario')?.id;
+    const inventory = ownerId ? getUser(ownerId).inventory : {};
+    options = searchCharacters(typed, allCharacters().length)
+      .filter((character) => (inventory[String(character.id)] ?? 0) > 0);
   } else if (sub === 'remover') {
     const wishlist = getUser(interaction.user.id).wishlist;
     options = wishlist.map(getCharacter).filter((c) => c && options.includes(c));
@@ -717,6 +856,7 @@ const handlers = {
   saldo: handleBalance,
   perfil: handleProfile,
   vender: handleSell,
+  trocar: handleTrade,
   diario: handleDaily,
   recentes: handleRecentRounds,
   wishlist: handleWishlist,

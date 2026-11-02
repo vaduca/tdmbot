@@ -73,6 +73,29 @@ export function sellDuplicateCard(userId, character) {
   return { ok: true, earned, copies: u.inventory[id], balance: u.coins };
 }
 
+export function exchangeCards(userAId, characterA, userBId, characterB) {
+  if (userAId === userBId) return { ok: false, reason: 'same_user' };
+  if (String(characterA.id) === String(characterB.id)) return { ok: false, reason: 'same_character' };
+
+  const userA = user(userAId);
+  const userB = user(userBId);
+  const characterAId = String(characterA.id);
+  const characterBId = String(characterB.id);
+
+  if (!(userA.inventory[characterAId] > 0) || !(userB.inventory[characterBId] > 0)) {
+    return { ok: false, reason: 'card_unavailable' };
+  }
+
+  userA.inventory[characterAId]--;
+  userB.inventory[characterBId]--;
+  if (userA.inventory[characterAId] === 0) delete userA.inventory[characterAId];
+  if (userB.inventory[characterBId] === 0) delete userB.inventory[characterBId];
+  userA.inventory[characterBId] = (userA.inventory[characterBId] ?? 0) + 1;
+  userB.inventory[characterAId] = (userB.inventory[characterAId] ?? 0) + 1;
+  save();
+  return { ok: true };
+}
+
 /**
  * Registra um acerto.
  * - Personagem na wishlist: ganha 1 pedaço; com todos os pedaços entra no inventário + bônus de 100% do valor.
