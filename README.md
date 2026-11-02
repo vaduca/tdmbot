@@ -10,6 +10,7 @@ Os personagens vêm do [AniList](https://anilist.co) (os mais favoritados), com 
 | Comando | O que faz |
 |---|---|
 | `/jogar [quantidade]` | Inicia uma sequência de 1 a 5 rodadas (padrão 3; cada uma dura 30s, com dica na metade do tempo) |
+| `/treino [quantidade]` | Jogue de 1 a 5 rodadas sem ganhar recompensas nem registrar acertos |
 | `/inventario [usuario]` | Mostra as cartas completas |
 | `/progresso` | Mostra os pedaços que você está juntando (só você vê) |
 | `/ranking` | Top 10 por cartas, moedas e acertos |
@@ -30,6 +31,7 @@ Os personagens vêm do [AniList](https://anilist.co) (os mais favoritados), com 
 - Em **35%** das rodadas, o personagem sai das wishlists de quem jogou naquele canal nos últimos 30 minutos (quem usou `/jogar` ou mandou palpite). Quanto mais jogadores querem o mesmo personagem, maior a chance dele. Ajuste com `WISHLIST_BOOST` no `.env`.
 - O bot evita repetir os **10 personagens mais recentes por canal**. Esse histórico fica em memória e reinicia quando o bot é reiniciado.
 - `/recentes` mostra as últimas 10 rodadas do canal, com personagem, resultado e horário relativo. O histórico reinicia quando o bot é reiniciado.
+- Rodadas de `/treino` também aparecem em `/recentes` e contam para evitar repetições, mas não afetam moedas, pedaços, acertos nem a prioridade da wishlist.
 - O sorteio favorece raridades comuns: cada personagem comum tem peso 8, incomum 6, raro 4, épico 2 e lendário 1. A mesma regra vale para personagens das wishlists.
 
 ### Valor por rank

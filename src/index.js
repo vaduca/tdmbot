@@ -81,7 +81,7 @@ function activePlayers(channelId) {
 
 // Com chance WISHLIST_BOOST, sorteia alguém das wishlists de quem jogou neste canal nos últimos 30 min.
 // Quanto mais jogadores querem o mesmo personagem, maior a chance dele.
-function drawCharacter(channelId) {
+function drawCharacter(channelId, training = false) {
   const pool = allCharacters();
   if (!pool.length) throw new Error('Não há personagens carregados para sortear.');
 
@@ -102,13 +102,13 @@ function drawCharacter(channelId) {
       .filter(Boolean);
     if (wanted.length) {
       const character = weightedCharacter(wanted);
-      rememberCharacter(channelId, history, character);
+      rememberCharacter(channelId, history, character, training);
       return character;
     }
   }
 
   const character = weightedCharacter(available);
-  rememberCharacter(channelId, history, character);
+  rememberCharacter(channelId, history, character, training);
   return character;
 }
 
@@ -124,12 +124,18 @@ function weightedCharacter(characters) {
   return characters[characters.length - 1];
 }
 
-function rememberCharacter(channelId, history, character) {
+function rememberCharacter(channelId, history, character, training = false) {
   history.push(String(character.id));
   recentCharacters.set(channelId, history.slice(-RECENT_CHARACTER_LIMIT));
 
   const rounds = recentRounds.get(channelId) ?? [];
-  rounds.push({ characterId: String(character.id), drawnAt: Date.now(), status: 'active', guessedBy: null });
+  rounds.push({
+    characterId: String(character.id),
+    drawnAt: Date.now(),
+    status: 'active',
+    guessedBy: null,
+    training,
+  });
   recentRounds.set(channelId, rounds.slice(-RECENT_CHARACTER_LIMIT));
 }
 
@@ -145,6 +151,16 @@ const commands = [
   new SlashCommandBuilder()
     .setName('jogar')
     .setDescription('Inicia uma sequência de rodadas: adivinhe os personagens!')
+    .addIntegerOption((o) =>
+      o
+        .setName('quantidade')
+        .setDescription(`Número de rodadas (padrão ${DEFAULT_ROUNDS}, máximo ${MAX_ROUNDS})`)
+        .setMinValue(1)
+        .setMaxValue(MAX_ROUNDS),
+    ),
+  new SlashCommandBuilder()
+    .setName('treino')
+    .setDescription('Jogue sem ganhar recompensas ou registrar acertos')
     .addIntegerOption((o) =>
       o
         .setName('quantidade')
@@ -224,16 +240,23 @@ function initialsHint(name) {
     .join('  ');
 }
 
-function playRound(interaction, character) {
+function playRound(interaction, character, training = false) {
   const channelId = interaction.channelId;
 
   const embed = new EmbedBuilder()
     .setTitle('❓ Quem é este personagem?')
-    .setDescription(`Digite o **nome completo** no chat!\nVocê tem **${ROUND_SECONDS}s**.`)
+    .setDescription(
+      `Digite o **nome completo** no chat!\nVocê tem **${ROUND_SECONDS}s**.` +
+        (training ? '\n🧪 **Treino:** esta rodada não dá recompensas.' : ''),
+    )
     .addFields({ name: '📺 Anime', value: character.anime })
     .setImage(character.image)
     .setColor(Colors.Blurple)
-    .setFooter({ text: `⭐ Na sua wishlist: ${PIECES} pedaços = carta • Fora dela: cada acerto vira TDM Coins` });
+    .setFooter({
+      text: training
+        ? 'Modo treino • sem moedas, pedaços ou acertos registrados'
+        : `⭐ Na sua wishlist: ${PIECES} pedaços = carta • Fora dela: cada acerto vira TDM Coins`,
+    });
 
   return interaction.channel.send({ embeds: [embed] }).then(() => new Promise((resolve, reject) => {
     let settled = false;
@@ -250,12 +273,23 @@ function playRound(interaction, character) {
     }, ROUND_MS / 2);
 
     collector.on('collect', async (message) => {
-      markPlayer(channelId, message.author.id); // quem chuta conta como jogador ativo
+      if (!training) markPlayer(channelId, message.author.id); // treino não influencia sorteios por wishlist
       if (!isCorrectGuess(character, message.content)) return;
       collector.stop('acerto');
       updateRecentRound(channelId, character.id, { status: 'guessed', guessedBy: message.author.id });
 
       try {
+        if (training) {
+          const win = new EmbedBuilder()
+            .setTitle(`🧪 Acertou no treino: ${character.name}!`)
+            .setDescription(`${message.author} acertou! Nenhuma recompensa ou progresso foi registrado.`)
+            .setThumbnail(character.image)
+            .addFields({ name: 'Raridade', value: rarityLabel(character), inline: true })
+            .setColor(Colors.Green);
+          await message.reply({ embeds: [win] });
+          return;
+        }
+
         const result = recordCorrectGuess(message.author.id, character, PIECES);
         const win = new EmbedBuilder()
           .setThumbnail(character.image)
@@ -305,8 +339,11 @@ function playRound(interaction, character) {
       try {
         updateRecentRound(channelId, character.id, { status: 'missed' });
         const lose = new EmbedBuilder()
-          .setTitle('⌛ Tempo esgotado!')
-          .setDescription(`Era **${character.name}** (${character.anime}).`)
+          .setTitle(training ? '⌛ Tempo esgotado no treino!' : '⌛ Tempo esgotado!')
+          .setDescription(
+            `Era **${character.name}** (${character.anime}).` +
+              (training ? '\nNenhum progresso foi registrado.' : ''),
+          )
           .setThumbnail(character.image)
           .setColor(Colors.Red);
         await interaction.channel.send({ embeds: [lose] });
@@ -318,7 +355,7 @@ function playRound(interaction, character) {
   }));
 }
 
-async function handlePlay(interaction) {
+async function handlePlay(interaction, training = false) {
   const channelId = interaction.channelId;
   if (activeRounds.has(channelId)) {
     return interaction.reply({ content: '⏳ Já tem uma sessão de jogo rolando neste canal!', flags: MessageFlags.Ephemeral });
@@ -326,18 +363,24 @@ async function handlePlay(interaction) {
 
   const rounds = interaction.options.getInteger('quantidade') ?? DEFAULT_ROUNDS;
   activeRounds.add(channelId);
-  markPlayer(channelId, interaction.user.id);
+  if (!training) markPlayer(channelId, interaction.user.id);
 
   try {
     await interaction.deferReply();
     await interaction.editReply({
-      content: `🎮 ${interaction.user}, começando **${rounds} rodada(s)**. A próxima começa quando a atual terminar.`,
+      content: training
+        ? `🧪 ${interaction.user}, começando **${rounds} rodada(s) de treino**. Sem recompensas; a próxima começa quando a atual terminar.`
+        : `🎮 ${interaction.user}, começando **${rounds} rodada(s)**. A próxima começa quando a atual terminar.`,
     });
     for (let i = 0; i < rounds; i++) {
-      const character = drawCharacter(channelId);
-      await playRound(interaction, character);
+      const character = drawCharacter(channelId, training);
+      await playRound(interaction, character, training);
     }
-    await interaction.channel.send(`🏁 Sessão concluída! Foram iniciadas **${rounds} rodada(s)**.`);
+    await interaction.channel.send(
+      training
+        ? `🏁 Treino concluído: **${rounds} rodada(s)**. Nenhum progresso foi registrado.`
+        : `🏁 Sessão concluída! Foram iniciadas **${rounds} rodada(s)**.`,
+    );
   } finally {
     activeRounds.delete(channelId);
   }
@@ -460,12 +503,13 @@ async function handleRecentRounds(interaction) {
   const lines = [...rounds].reverse().map((round, index) => {
     const character = getCharacter(round.characterId);
     const name = character ? `**${character.name}** — ${character.anime}` : `Personagem #${round.characterId}`;
+    const mode = round.training ? '🧪 Treino • ' : '';
     const outcome = round.status === 'active'
       ? '⏳ Em andamento'
       : round.status === 'guessed'
         ? `✅ Acertado por <@${round.guessedBy}>`
         : '⌛ Ninguém acertou';
-    return `${index + 1}. ${name}\n   ${outcome} • <t:${Math.floor(round.drawnAt / 1000)}:R>`;
+    return `${index + 1}. ${mode}${name}\n   ${outcome} • <t:${Math.floor(round.drawnAt / 1000)}:R>`;
   });
 
   const embed = new EmbedBuilder()
@@ -593,7 +637,8 @@ async function handleAutocomplete(interaction) {
 }
 
 const handlers = {
-  jogar: handlePlay,
+  jogar: (interaction) => handlePlay(interaction),
+  treino: (interaction) => handlePlay(interaction, true),
   inventario: handleInventory,
   progresso: handleProgress,
   ranking: handleRanking,
