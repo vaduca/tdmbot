@@ -16,7 +16,7 @@ Os personagens vêm do [AniList](https://anilist.co) (os mais favoritados), com 
 | `/ranking` | Top 10 por cartas, moedas e acertos |
 | `/saldo [usuario]` | Mostra as TDM Coins |
 | `/perfil [usuario]` | Mostra coleção, acertos, saldo, wishlist, progresso e sequência diária |
-| `/vender personagem` | Vende uma cópia extra por 25% do valor da carta; a última cópia é preservada |
+| `/vender personagem` | Vende sua carta por 100% do valor e libera o personagem para outro jogador |
 | `/trocar usuario oferece quer` | Propõe uma troca de cartas; o destinatário precisa confirmar |
 | `/diario` | Resgata TDM Coins uma vez a cada 24 horas; sequência de até 7 dias aumenta o prêmio |
 | `/missao` | Mostra a missão diária: acerte 3 personagens no modo normal para ganhar 100 TDM Coins |
@@ -30,6 +30,7 @@ Os personagens vêm do [AniList](https://anilist.co) (os mais favoritados), com 
 - `/missao` acompanha até 3 acertos no modo normal por dia e concede 100 TDM Coins automaticamente ao completar. O progresso reinicia à meia-noite UTC; `/treino` não conta.
 
 - Só personagens que estão na sua **wishlist** entram no inventário.
+- Cada personagem só pode pertencer a um jogador por vez. Se alguém acertar um personagem já coletado, recebe TDM Coins em vez de pedaços. O dono pode vender a carta com `/vender` ou transferi-la numa troca.
 - Acertou alguém **da wishlist**: ganha 1 pedaço. Com 4 pedaços, a carta entra no inventário e você ganha um bônus de **100% do valor** do personagem.
 - Acertou alguém **fora da wishlist**: cada acerto dá **10% do valor** em moedas. Com 4 pedaços, você ganha um bônus de **50% do valor** e o personagem não entra no inventário.
 - Os pedaços continuam guardados se você tirar ou colocar o personagem na wishlist. O que vale é se ele está na wishlist no momento do 4º acerto.
@@ -68,17 +69,30 @@ O palpite aceita o nome em qualquer ordem, sem acento/maiúsculas ("Luffy Monkey
    - **Reset Token** e copie o token.
    - Ative **Message Content Intent** (obrigatório — o bot lê os palpites do chat).
 3. Aba **OAuth2 → URL Generator**: marque `bot` e `applications.commands`; permissões `Send Messages`, `Embed Links`, `Read Message History`. Abra a URL gerada e adicione o bot ao seu servidor.
-4. Copie `.env.example` para `.env` e preencha `DISCORD_TOKEN` e (recomendado) `GUILD_ID`
+4. Se ainda não existir, copie `.env.example` para `.env`. Se já existir, preserve o token e acrescente as configurações do PostgreSQL do exemplo. Preencha `DISCORD_TOKEN` e (recomendado) `GUILD_ID`
    (clique direito no servidor → Copiar ID; precisa do Modo Desenvolvedor ligado nas configurações do Discord).
-5. Instale e rode (Node 18+):
+5. Instale e rode (Node 18+ e Docker Compose):
 
 ```bash
 npm install
-```
-
-```bash
+docker compose up -d db
 npm start
 ```
+
+Se estiver migrando um `data/players.json` existente, pare qualquer instância do bot e rode `npm run db:import-json` antes de iniciar.
+
+## PostgreSQL com Docker Compose
+
+O bot e o PostgreSQL rodam como serviços separados na mesma máquina. O Compose mantém os dados do banco em um volume persistente; a porta 5432 fica disponível apenas em `localhost` para administração e importação, sem exposição direta à internet. O bot conecta ao banco pela rede privada do Compose.
+
+1. Instale Docker Engine com o plugin Docker Compose.
+2. Copie `.env.example` para `.env`, mantenha o token do bot e configure a mesma senha forte em `POSTGRES_PASSWORD`, `PGPASSWORD` e `DATABASE_URL`.
+3. Instale as dependências: `npm install`.
+4. Inicie o banco: `docker compose up -d db`.
+5. Para migrar dados existentes, pare o bot e rode `npm run db:import-json`.
+6. Inicie bot e banco no Compose: `docker compose up -d`.
+
+O bot cria as tabelas na inicialização. O importador lê `data/players.json` e só grava se o banco ainda não tiver jogadores. Ele reduz cópias antigas do mesmo jogador a uma carta e cancela se encontrar o mesmo personagem em coleções de jogadores diferentes, para que vocês escolham quem mantém a carta. Faça uma cópia do JSON antes da importação. O volume do PostgreSQL persiste entre reinícios, mas não substitui um backup guardado fora da máquina. Para conferir os logs: `docker compose logs -f bot`.
 
 ## Configurações (`.env`)
 
@@ -92,4 +106,6 @@ npm start
 - `src/index.js` — comandos e lógica das rodadas
 - `src/characters.js` — busca no AniList e checagem do nome
 - `src/economy.js` — raridades, valores, recompensas diárias e perks
-- `src/store.js` — pedaços, inventário, moedas, wishlist, sequência diária e perks salvos em `data/players.json`
+- `src/store.js` — operações transacionais de PostgreSQL para pedaços, inventário, moedas, wishlist, sequência diária e perks
+- `src/database/schema.sql` — esquema do PostgreSQL
+- `scripts/import-json-to-postgres.js` — importação protegida de `data/players.json`

@@ -1,0 +1,46 @@
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-tdmbot}
+      POSTGRES_USER: ${POSTGRES_USER:-tdmbot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Defina POSTGRES_PASSWORD no arquivo .env}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - app
+
+  bot:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-tdmbot}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-tdmbot}
+      PGHOST: db
+      PGPORT: 5432
+      PGDATABASE: ${POSTGRES_DB:-tdmbot}
+      PGUSER: ${POSTGRES_USER:-tdmbot}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?Defina POSTGRES_PASSWORD no arquivo .env}
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - bot_data:/app/data
+    networks:
+      - app
+
+volumes:
+  bot_data:
+  postgres_data:
+
+networks:
+  app:
