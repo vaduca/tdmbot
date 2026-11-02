@@ -178,6 +178,10 @@ const commands = [
     .setName('saldo')
     .setDescription('Mostra suas TDM Coins')
     .addUserOption((o) => o.setName('usuario').setDescription('Ver o saldo de outra pessoa')),
+  new SlashCommandBuilder()
+    .setName('perfil')
+    .setDescription('Mostra seu perfil e suas estatísticas')
+    .addUserOption((o) => o.setName('usuario').setDescription('Ver o perfil de outra pessoa')),
   new SlashCommandBuilder().setName('diario').setDescription('Resgata sua recompensa diária em TDM Coins'),
   new SlashCommandBuilder().setName('recentes').setDescription('Mostra as últimas rodadas deste canal'),
   new SlashCommandBuilder()
@@ -471,6 +475,39 @@ async function handleBalance(interaction) {
   await interaction.reply({ embeds: [embed] });
 }
 
+async function handleProfile(interaction) {
+  const target = interaction.options.getUser('usuario') ?? interaction.user;
+  const u = getUser(target.id);
+  const inventoryEntries = Object.entries(u.inventory);
+  const totalCards = inventoryEntries.reduce((total, [, copies]) => total + copies, 0);
+  const pieceEntries = Object.entries(u.pieces);
+  const totalPieces = pieceEntries.reduce((total, [, pieces]) => total + pieces, 0);
+  const dailyStreak = u.daily?.streak ?? 0;
+
+  const embed = new EmbedBuilder()
+    .setTitle(`👤 Perfil de ${target.username}`)
+    .setThumbnail(target.displayAvatarURL())
+    .addFields(
+      {
+        name: '🃏 Coleção',
+        value: `**${totalCards}** carta(s) • **${inventoryEntries.length}** personagem(ns) diferente(s)`,
+        inline: false,
+      },
+      { name: '✅ Acertos', value: u.correct.toLocaleString('pt-BR'), inline: true },
+      { name: '🪙 Saldo', value: coins(u.coins), inline: true },
+      { name: '⭐ Wishlist', value: `${u.wishlist.length}/${wishlistSlots(u)} vagas`, inline: true },
+      {
+        name: '📈 Progresso',
+        value: `${pieceEntries.length} personagem(ns) • ${totalPieces} pedaço(s)`,
+        inline: true,
+      },
+      { name: '🔥 Sequência diária', value: `${dailyStreak}/7 dias`, inline: true },
+    )
+    .setColor(Colors.Blurple);
+
+  await interaction.reply({ embeds: [embed] });
+}
+
 async function handleDaily(interaction) {
   const result = claimDailyReward(interaction.user.id);
   if (!result.ok) {
@@ -643,6 +680,7 @@ const handlers = {
   progresso: handleProgress,
   ranking: handleRanking,
   saldo: handleBalance,
+  perfil: handleProfile,
   diario: handleDaily,
   recentes: handleRecentRounds,
   wishlist: handleWishlist,
