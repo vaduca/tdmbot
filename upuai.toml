@@ -1,0 +1,6 @@
+#:schema https://upuai.com.br/schemas/upuai-toml-v1.json
+
+[processes.bot]
+command = "node src/index.js"
+type = "worker"
+instances = 1
