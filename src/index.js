@@ -64,6 +64,8 @@ const activeRounds = new Set();
 const recentPlayers = new Map();
 // IDs dos personagens sorteados recentemente em cada canal.
 const recentCharacters = new Map();
+// Rodadas recentes exibidas pelo comando /recentes: channelId -> lista de rodadas.
+const recentRounds = new Map();
 
 function markPlayer(channelId, userId) {
   if (!recentPlayers.has(channelId)) recentPlayers.set(channelId, new Map());
@@ -125,6 +127,18 @@ function weightedCharacter(characters) {
 function rememberCharacter(channelId, history, character) {
   history.push(String(character.id));
   recentCharacters.set(channelId, history.slice(-RECENT_CHARACTER_LIMIT));
+
+  const rounds = recentRounds.get(channelId) ?? [];
+  rounds.push({ characterId: String(character.id), drawnAt: Date.now(), status: 'active', guessedBy: null });
+  recentRounds.set(channelId, rounds.slice(-RECENT_CHARACTER_LIMIT));
+}
+
+function updateRecentRound(channelId, characterId, update) {
+  const rounds = recentRounds.get(channelId) ?? [];
+  const round = [...rounds].reverse().find(
+    (entry) => entry.characterId === String(characterId) && entry.status === 'active',
+  );
+  if (round) Object.assign(round, update);
 }
 
 const commands = [
@@ -149,6 +163,7 @@ const commands = [
     .setDescription('Mostra suas TDM Coins')
     .addUserOption((o) => o.setName('usuario').setDescription('Ver o saldo de outra pessoa')),
   new SlashCommandBuilder().setName('diario').setDescription('Resgata sua recompensa diária em TDM Coins'),
+  new SlashCommandBuilder().setName('recentes').setDescription('Mostra as últimas rodadas deste canal'),
   new SlashCommandBuilder()
     .setName('wishlist')
     .setDescription('Só personagens da wishlist entram no inventário')
@@ -238,6 +253,7 @@ function playRound(interaction, character) {
       markPlayer(channelId, message.author.id); // quem chuta conta como jogador ativo
       if (!isCorrectGuess(character, message.content)) return;
       collector.stop('acerto');
+      updateRecentRound(channelId, character.id, { status: 'guessed', guessedBy: message.author.id });
 
       try {
         const result = recordCorrectGuess(message.author.id, character, PIECES);
@@ -287,6 +303,7 @@ function playRound(interaction, character) {
     collector.on('end', async (_collected, reason) => {
       if (reason === 'acerto') return finish('acerto');
       try {
+        updateRecentRound(channelId, character.id, { status: 'missed' });
         const lose = new EmbedBuilder()
           .setTitle('⌛ Tempo esgotado!')
           .setDescription(`Era **${character.name}** (${character.anime}).`)
@@ -431,6 +448,34 @@ async function handleDaily(interaction) {
   await interaction.reply({ embeds: [embed] });
 }
 
+async function handleRecentRounds(interaction) {
+  const rounds = recentRounds.get(interaction.channelId) ?? [];
+  if (!rounds.length) {
+    return interaction.reply({
+      content: 'Ainda não há rodadas recentes neste canal.',
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+
+  const lines = [...rounds].reverse().map((round, index) => {
+    const character = getCharacter(round.characterId);
+    const name = character ? `**${character.name}** — ${character.anime}` : `Personagem #${round.characterId}`;
+    const outcome = round.status === 'active'
+      ? '⏳ Em andamento'
+      : round.status === 'guessed'
+        ? `✅ Acertado por <@${round.guessedBy}>`
+        : '⌛ Ninguém acertou';
+    return `${index + 1}. ${name}\n   ${outcome} • <t:${Math.floor(round.drawnAt / 1000)}:R>`;
+  });
+
+  const embed = new EmbedBuilder()
+    .setTitle('🕘 Rodadas recentes deste canal')
+    .setDescription(lines.join('\n'))
+    .setColor(Colors.Blurple)
+    .setFooter({ text: `Últimas ${rounds.length} rodadas • histórico reinicia quando o bot reinicia` });
+  await interaction.reply({ embeds: [embed], allowedMentions: { users: [] } });
+}
+
 async function handleWishlist(interaction) {
   const sub = interaction.options.getSubcommand();
 
@@ -554,6 +599,7 @@ const handlers = {
   ranking: handleRanking,
   saldo: handleBalance,
   diario: handleDaily,
+  recentes: handleRecentRounds,
   wishlist: handleWishlist,
   perks: handlePerks,
 };

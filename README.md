@@ -15,6 +15,7 @@ Os personagens vêm do [AniList](https://anilist.co) (os mais favoritados), com 
 | `/ranking` | Top 10 por cartas, moedas e acertos |
 | `/saldo [usuario]` | Mostra as TDM Coins |
 | `/diario` | Resgata TDM Coins uma vez a cada 24 horas; sequência de até 7 dias aumenta o prêmio |
+| `/recentes` | Mostra as 10 últimas rodadas do canal e se alguém acertou |
 | `/wishlist ver / adicionar / remover` | Gerencia a wishlist (o nome do personagem tem autocomplete) |
 | `/perks ver / comprar` | Mostra e compra perks com TDM Coins |
 
@@ -28,6 +29,7 @@ Os personagens vêm do [AniList](https://anilist.co) (os mais favoritados), com 
 - Os pedaços continuam guardados se você tirar ou colocar o personagem na wishlist. O que vale é se ele está na wishlist no momento do 4º acerto.
 - Em **35%** das rodadas, o personagem sai das wishlists de quem jogou naquele canal nos últimos 30 minutos (quem usou `/jogar` ou mandou palpite). Quanto mais jogadores querem o mesmo personagem, maior a chance dele. Ajuste com `WISHLIST_BOOST` no `.env`.
 - O bot evita repetir os **10 personagens mais recentes por canal**. Esse histórico fica em memória e reinicia quando o bot é reiniciado.
+- `/recentes` mostra as últimas 10 rodadas do canal, com personagem, resultado e horário relativo. O histórico reinicia quando o bot é reiniciado.
 - O sorteio favorece raridades comuns: cada personagem comum tem peso 8, incomum 6, raro 4, épico 2 e lendário 1. A mesma regra vale para personagens das wishlists.
 
 ### Valor por rank
