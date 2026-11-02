@@ -14,10 +14,13 @@ Os personagens vêm do [AniList](https://anilist.co) (os mais favoritados), com 
 | `/progresso` | Mostra os pedaços que você está juntando (só você vê) |
 | `/ranking` | Top 10 por cartas, moedas e acertos |
 | `/saldo [usuario]` | Mostra as TDM Coins |
+| `/diario` | Resgata TDM Coins uma vez a cada 24 horas; sequência de até 7 dias aumenta o prêmio |
 | `/wishlist ver / adicionar / remover` | Gerencia a wishlist (o nome do personagem tem autocomplete) |
 | `/perks ver / comprar` | Mostra e compra perks com TDM Coins |
 
 ## Wishlist e TDM Coins 🪙
+
+- `/diario` concede 100 TDM Coins no primeiro resgate e +25 por dia consecutivo, até 250 no 7º dia. O resgate libera a cada 24 horas; após 48 horas sem resgatar, a sequência volta ao primeiro dia.
 
 - Só personagens que estão na sua **wishlist** entram no inventário.
 - Acertou alguém **da wishlist**: ganha 1 pedaço. Com 4 pedaços, a carta entra no inventário e você ganha um bônus de **100% do valor** do personagem.
@@ -79,5 +82,5 @@ npm start
 
 - `src/index.js` — comandos e lógica das rodadas
 - `src/characters.js` — busca no AniList e checagem do nome
-- `src/economy.js` — raridades, valores, recompensas e perks
-- `src/store.js` — pedaços, inventário, moedas, wishlist e perks salvos em `data/players.json`
+- `src/economy.js` — raridades, valores, recompensas diárias e perks
+- `src/store.js` — pedaços, inventário, moedas, wishlist, sequência diária e perks salvos em `data/players.json`

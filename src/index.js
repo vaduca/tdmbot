@@ -16,6 +16,7 @@ import {
 } from './characters.js';
 import {
   recordCorrectGuess,
+  claimDailyReward,
   getUser,
   ranking,
   addToWishlist,
@@ -147,6 +148,7 @@ const commands = [
     .setName('saldo')
     .setDescription('Mostra suas TDM Coins')
     .addUserOption((o) => o.setName('usuario').setDescription('Ver o saldo de outra pessoa')),
+  new SlashCommandBuilder().setName('diario').setDescription('Resgata sua recompensa diária em TDM Coins'),
   new SlashCommandBuilder()
     .setName('wishlist')
     .setDescription('Só personagens da wishlist entram no inventário')
@@ -310,7 +312,8 @@ async function handlePlay(interaction) {
   markPlayer(channelId, interaction.user.id);
 
   try {
-    await interaction.reply({
+    await interaction.deferReply();
+    await interaction.editReply({
       content: `🎮 ${interaction.user}, começando **${rounds} rodada(s)**. A próxima começa quando a atual terminar.`,
     });
     for (let i = 0; i < rounds; i++) {
@@ -405,6 +408,26 @@ async function handleBalance(interaction) {
     .setDescription(coins(u.coins))
     .addFields({ name: '⭐ Wishlist', value: `${u.wishlist.length}/${wishlistSlots(u)} vagas`, inline: true })
     .setColor(Colors.Yellow);
+  await interaction.reply({ embeds: [embed] });
+}
+
+async function handleDaily(interaction) {
+  const result = claimDailyReward(interaction.user.id);
+  if (!result.ok) {
+    return interaction.reply({
+      content: `🎁 Você já resgatou sua recompensa. A próxima fica disponível <t:${Math.ceil(result.availableAt / 1000)}:R>.`,
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+
+  const embed = new EmbedBuilder()
+    .setTitle('🎁 Recompensa diária resgatada!')
+    .setDescription(
+      `${coins(result.reward)}\n🔥 Sequência: **${result.streak}/7 dias**\n` +
+        `Próximo resgate: <t:${Math.ceil(result.availableAt / 1000)}:R>.`,
+    )
+    .setColor(Colors.Gold)
+    .setFooter({ text: `Saldo: ${result.balance.toLocaleString('pt-BR')} TDM Coins` });
   await interaction.reply({ embeds: [embed] });
 }
 
@@ -530,6 +553,7 @@ const handlers = {
   progresso: handleProgress,
   ranking: handleRanking,
   saldo: handleBalance,
+  diario: handleDaily,
   wishlist: handleWishlist,
   perks: handlePerks,
 };
@@ -545,7 +569,7 @@ client.once('clientReady', async () => {
   } else {
     await client.application.commands.set(commandBody);
   }
-  console.log(`✅ Logado como ${client.user.tag}`);
+  console.log(`✅ Logado como ${client.user.tag} (processo ${process.pid})`);
 });
 
 // Registra os comandos na hora em que o bot é convidado para o servidor
@@ -560,6 +584,13 @@ client.on('interactionCreate', async (interaction) => {
     return handleAutocomplete(interaction).catch((err) => console.error(err));
   }
   if (!interaction.isChatInputCommand()) return;
+  if (interaction.commandName === 'jogar') {
+    const ageMs = Date.now() - interaction.createdTimestamp;
+    console.log(
+      `📥 /jogar recebido: interação ${interaction.id}, idade ${ageMs} ms, ` +
+        `ping ${client.ws.ping} ms, processo ${process.pid}`,
+    );
+  }
   const handler = handlers[interaction.commandName];
   if (!handler) return;
   try {

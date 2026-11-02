@@ -3,6 +3,7 @@ import { readFileSync, writeFileSync, mkdirSync, renameSync } from 'node:fs';
 import path from 'node:path';
 import {
   PERKS,
+  DAILY_REWARD,
   guessReward,
   outsideCompletionBonus,
   wishlistCompletionBonus,
@@ -34,7 +35,26 @@ function user(userId) {
   u.coins ??= 0;
   u.wishlist ??= [];
   u.perks ??= {};
+  u.daily ??= { lastClaimAt: 0, streak: 0 };
   return u;
+}
+
+export function claimDailyReward(userId, now = Date.now()) {
+  const u = user(userId);
+  const { lastClaimAt, streak: previousStreak } = u.daily;
+  const availableAt = lastClaimAt + DAILY_REWARD.cooldownMs;
+
+  if (now < availableAt) return { ok: false, availableAt };
+
+  const streak = lastClaimAt && now - lastClaimAt <= DAILY_REWARD.streakWindowMs
+    ? Math.min(previousStreak + 1, DAILY_REWARD.maxStreak)
+    : 1;
+  const reward = DAILY_REWARD.base + DAILY_REWARD.streakBonus * (streak - 1);
+
+  u.daily = { lastClaimAt: now, streak };
+  u.coins += reward;
+  save();
+  return { ok: true, reward, streak, balance: u.coins, availableAt: now + DAILY_REWARD.cooldownMs };
 }
 
 /**

@@ -12,6 +12,14 @@ export const RARITIES = [
 export const COIN = '🪙';
 export const coins = (n) => `${COIN} **${n.toLocaleString('pt-BR')}** TDM Coins`;
 
+export const DAILY_REWARD = {
+  base: 100,
+  streakBonus: 25,
+  maxStreak: 7,
+  cooldownMs: 24 * 60 * 60 * 1000,
+  streakWindowMs: 48 * 60 * 60 * 1000,
+};
+
 export function rarityOf(character) {
   return RARITIES.find((r) => character.rank <= r.maxRank);
 }
