@@ -11,6 +11,7 @@ export const RARITIES = [
 
 export const COIN = '🪙';
 export const coins = (n) => `${COIN} **${n.toLocaleString('pt-BR')}** TDM Coins`;
+export const DUPLICATE_SELL_RATE = 0.25;
 
 export const DAILY_REWARD = {
   base: 100,

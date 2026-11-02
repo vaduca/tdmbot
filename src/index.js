@@ -17,6 +17,7 @@ import {
 import {
   recordCorrectGuess,
   claimDailyReward,
+  sellDuplicateCard,
   getUser,
   ranking,
   addToWishlist,
@@ -182,6 +183,12 @@ const commands = [
     .setName('perfil')
     .setDescription('Mostra seu perfil e suas estatísticas')
     .addUserOption((o) => o.setName('usuario').setDescription('Ver o perfil de outra pessoa')),
+  new SlashCommandBuilder()
+    .setName('vender')
+    .setDescription('Vende uma cópia extra de uma carta por TDM Coins')
+    .addStringOption((o) =>
+      o.setName('personagem').setDescription('Personagem duplicado para vender').setRequired(true).setAutocomplete(true),
+    ),
   new SlashCommandBuilder().setName('diario').setDescription('Resgata sua recompensa diária em TDM Coins'),
   new SlashCommandBuilder().setName('recentes').setDescription('Mostra as últimas rodadas deste canal'),
   new SlashCommandBuilder()
@@ -508,6 +515,31 @@ async function handleProfile(interaction) {
   await interaction.reply({ embeds: [embed] });
 }
 
+async function handleSell(interaction) {
+  const character = getCharacter(interaction.options.getString('personagem'));
+  if (!character) {
+    return interaction.reply({
+      content: 'Não encontrei esse personagem no pool atual. Selecione uma opção do autocomplete.',
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+
+  const result = sellDuplicateCard(interaction.user.id, character);
+  if (!result.ok) {
+    const message = result.reason === 'not_owned'
+      ? `Você não tem **${character.name}** na coleção.`
+      : `Você só tem uma cópia de **${character.name}**; a última cópia não pode ser vendida.`;
+    return interaction.reply({ content: message, flags: MessageFlags.Ephemeral });
+  }
+
+  return interaction.reply({
+    content:
+      `Você vendeu uma cópia de **${character.name}** por ${coins(result.earned)}. ` +
+      `Restam **${result.copies}** cópia(s); seu saldo é ${coins(result.balance)}.`,
+    flags: MessageFlags.Ephemeral,
+  });
+}
+
 async function handleDaily(interaction) {
   const result = claimDailyReward(interaction.user.id);
   if (!result.ok) {
@@ -661,7 +693,10 @@ async function handleAutocomplete(interaction) {
   const typed = interaction.options.getFocused();
   const sub = interaction.options.getSubcommand(false);
   let options = searchCharacters(typed);
-  if (sub === 'remover') {
+  if (interaction.commandName === 'vender') {
+    const inventory = getUser(interaction.user.id).inventory;
+    options = options.filter((character) => (inventory[String(character.id)] ?? 0) > 1);
+  } else if (sub === 'remover') {
     const wishlist = getUser(interaction.user.id).wishlist;
     options = wishlist.map(getCharacter).filter((c) => c && options.includes(c));
   }
@@ -681,6 +716,7 @@ const handlers = {
   ranking: handleRanking,
   saldo: handleBalance,
   perfil: handleProfile,
+  vender: handleSell,
   diario: handleDaily,
   recentes: handleRecentRounds,
   wishlist: handleWishlist,

@@ -4,10 +4,12 @@ import path from 'node:path';
 import {
   PERKS,
   DAILY_REWARD,
+  DUPLICATE_SELL_RATE,
   guessReward,
   outsideCompletionBonus,
   wishlistCompletionBonus,
   wishlistSlots,
+  valueOf,
 } from './economy.js';
 
 const DB_FILE = path.resolve('data', 'players.json');
@@ -55,6 +57,20 @@ export function claimDailyReward(userId, now = Date.now()) {
   u.coins += reward;
   save();
   return { ok: true, reward, streak, balance: u.coins, availableAt: now + DAILY_REWARD.cooldownMs };
+}
+
+export function sellDuplicateCard(userId, character) {
+  const u = user(userId);
+  const id = String(character.id);
+  const copies = u.inventory[id] ?? 0;
+  if (copies === 0) return { ok: false, reason: 'not_owned' };
+  if (copies < 2) return { ok: false, reason: 'keep_last' };
+
+  const earned = Math.round(valueOf(character) * DUPLICATE_SELL_RATE);
+  u.inventory[id] = copies - 1;
+  u.coins += earned;
+  save();
+  return { ok: true, earned, copies: u.inventory[id], balance: u.coins };
 }
 
 /**

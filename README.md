@@ -16,6 +16,7 @@ Os personagens vêm do [AniList](https://anilist.co) (os mais favoritados), com 
 | `/ranking` | Top 10 por cartas, moedas e acertos |
 | `/saldo [usuario]` | Mostra as TDM Coins |
 | `/perfil [usuario]` | Mostra coleção, acertos, saldo, wishlist, progresso e sequência diária |
+| `/vender personagem` | Vende uma cópia extra por 25% do valor da carta; a última cópia é preservada |
 | `/diario` | Resgata TDM Coins uma vez a cada 24 horas; sequência de até 7 dias aumenta o prêmio |
 | `/recentes` | Mostra as 10 últimas rodadas do canal e se alguém acertou |
 | `/wishlist ver / adicionar / remover` | Gerencia a wishlist (o nome do personagem tem autocomplete) |
